@@ -607,7 +607,6 @@ class _Builder:
             inputs=(prefix + "gdn/gated_output",),
         )
         roles = [prefix + "gdn/" + role for role in ("query", "key", "value", "z")]
-        self.group(*roles)
         self.group(*roles[:2])
         self.group(*roles[2:])
         self.group(prefix + "gdn/a_projection", prefix + "gdn/b_projection")

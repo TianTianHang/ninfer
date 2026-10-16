@@ -70,6 +70,12 @@ struct MoeConfig {
     std::uint32_t shared_expert_intermediate_size = 0;
 };
 
+struct HadamardConfig {
+    std::uint32_t block_size = 0;
+    std::array<std::uint32_t, 3> sign_widths{};
+    bool gdn_v_grouped = false;
+};
+
 struct TextConfig {
     Architecture architecture             = Architecture::Qwen3_5;
     std::uint32_t hidden_size             = 0;
@@ -85,6 +91,7 @@ struct TextConfig {
     std::optional<AttentionConfig> attention;
     std::optional<RopeConfig> rope_parameters;
     std::optional<GdnConfig> gdn;
+    std::optional<HadamardConfig> hadamard;
     std::variant<DenseConfig, MoeConfig> ffn;
 };
 

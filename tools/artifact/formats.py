@@ -19,13 +19,32 @@ class DirectFormat:
 
 @dataclass(frozen=True, slots=True)
 class QuantFormat:
-    """Signed grouped codes with one binary16 multiplier per group."""
+    """Grouped codes with one binary16 multiplier per group.
+
+    ``qmin``/``qmax`` bound the representable weight coefficients. Two code
+    conventions exist, selected by ``zero_value_code``:
+
+    * ``None`` — the packed code is a two's-complement integer and is itself the
+      weight coefficient, so the represented value is ``code * scale``.
+    * an integer — the packed code is an unsigned grid index in
+      ``0 .. 2**bits - 1`` and the represented value is
+      ``(code - zero_value_code) * scale``.
+    """
 
     name: str
     bits: int
     group_size: int
     qmin: int
     qmax: int
+    zero_value_code: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.zero_value_code is not None and not (
+            0 <= self.zero_value_code < 1 << self.bits
+        ):
+            raise ValueError(
+                f"{self.name}: zero_value_code must be a {self.bits}-bit grid index"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,13 +73,20 @@ Q4_G64_FP16 = QuantFormat("q4_g64_fp16", 4, 64, -8, 7)
 Q5_G64_FP16 = QuantFormat("q5_g64_fp16", 5, 64, -16, 15)
 Q6_G64_FP16 = QuantFormat("q6_g64_fp16", 6, 64, -32, 31)
 Q8_G32_FP16 = QuantFormat("q8_g32_fp16", 8, 32, -127, 127)
+# Ternary codes on an unsigned grid: code c in {0,1,2,3} represents (c - 1) * scale,
+# i.e. the coefficients {-1, 0, +1, +2}. This is exactly the ggml PQ2_0 codebook, so
+# an existing PQ2_0 payload can be imported without touching codes or scales.
+Q2_G128_FP16 = QuantFormat("q2_g128_fp16", 2, 128, -1, 2, zero_value_code=1)
 NVFP4 = Nvfp4Format("nvfp4", 16)
 FP8_E4M3FN_ROW_BF16 = Fp8RowFormat("fp8_e4m3fn_row_bf16")
 
 
 DIRECT_FORMATS = MappingProxyType({item.name: item for item in (BF16, FP32, INT32)})
 QUANT_FORMATS = MappingProxyType(
-    {item.name: item for item in (Q4_G64_FP16, Q5_G64_FP16, Q6_G64_FP16, Q8_G32_FP16)}
+    {
+        item.name: item
+        for item in (Q2_G128_FP16, Q4_G64_FP16, Q5_G64_FP16, Q6_G64_FP16, Q8_G32_FP16)
+    }
 )
 NVFP4_FORMATS = MappingProxyType({NVFP4.name: NVFP4})
 FP8_ROW_FORMATS = MappingProxyType({FP8_E4M3FN_ROW_BF16.name: FP8_E4M3FN_ROW_BF16})
@@ -141,6 +167,7 @@ __all__ = [
     "BF16",
     "FP32",
     "INT32",
+    "Q2_G128_FP16",
     "Q4_G64_FP16",
     "Q5_G64_FP16",
     "Q6_G64_FP16",

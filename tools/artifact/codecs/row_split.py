@@ -9,7 +9,7 @@ from typing import Sequence, TypeAlias
 
 import torch
 
-from ..formats import QuantFormat
+from ..formats import QUANT_FORMATS, QuantFormat
 from ..layouts import RowSplitGeometry, _format, row_split_geometry
 from ._tensor_bytes import Payload, _payload_length, _payload_tensor
 
@@ -65,16 +65,28 @@ def _pack_high_bits(codes: torch.Tensor, bits: int) -> torch.Tensor:
 def _pack_codes(
     codes: torch.Tensor, spec: QuantFormat
 ) -> tuple[torch.Tensor, torch.Tensor]:
+    """Pack one group row per entry.
+
+    ``codes`` holds int8 words: the signed two's-complement coefficient for the
+    4/5/6/8-bit formats, and the unsigned grid index ``0 .. 2**bits - 1`` for a
+    ``zero_value_code`` format (2-bit), whose index is the stored code itself.
+    """
+    empty = torch.empty((codes.shape[0], 0), dtype=torch.uint8, device=codes.device)
     if spec.bits == 8:
-        return (
-            codes.contiguous().view(torch.uint8),
-            torch.empty((codes.shape[0], 0), dtype=torch.uint8, device=codes.device),
+        return codes.contiguous().view(torch.uint8), empty
+    if spec.bits < 4:
+        unsigned = codes.to(torch.int16) & ((1 << spec.bits) - 1)
+        packed = torch.zeros(
+            (codes.shape[0], spec.group_size * spec.bits // 8),
+            dtype=torch.int16,
+            device=codes.device,
         )
+        for slot in range(8 // spec.bits):
+            packed |= unsigned[:, slot:: 8 // spec.bits] << (spec.bits * slot)
+        return packed.to(torch.uint8), empty
     base = _pack_low_nibbles(codes)
     high = (
-        torch.empty((codes.shape[0], 0), dtype=torch.uint8, device=codes.device)
-        if spec.bits == 4
-        else _pack_high_bits(codes, spec.bits)
+        empty if spec.bits == 4 else _pack_high_bits(codes, spec.bits)
     )
     return base, high
 
@@ -379,6 +391,17 @@ def _unpack_codes(
         )
         return scales, codes
     packed = planes.base.reshape(groups, geometry.base_bytes_per_group).to(torch.int16)
+    if spec.bits < 4:
+        codes = torch.empty(
+            (groups, spec.group_size), dtype=torch.int16, device=packed.device
+        )
+        for slot in range(8 // spec.bits):
+            codes[:, slot:: 8 // spec.bits] = (
+                packed >> (spec.bits * slot)
+            ) & ((1 << spec.bits) - 1)
+        return scales, codes.to(torch.int8).reshape(
+            geometry.n, geometry.groups_per_row, spec.group_size
+        )
     low = torch.empty(
         (groups, spec.group_size), dtype=torch.int16, device=packed.device
     )
@@ -437,6 +460,27 @@ def _low_g64(base: torch.Tensor, groups: int) -> torch.Tensor:
     )
 
 
+def _grid_codes(
+    base: torch.Tensor, groups: int, bits: int, group_size: int
+) -> torch.Tensor:
+    """Unpack an unsigned grid code format: ``8 // bits`` codes per byte."""
+    per_byte = 8 // bits
+    packed = base.reshape(groups, group_size * bits // 8).to(torch.int16)
+    codes = torch.empty((groups, group_size), dtype=torch.int16, device=packed.device)
+    for slot in range(per_byte):
+        codes[:, slot::per_byte] = (packed >> (bits * slot)) & ((1 << bits) - 1)
+    return codes
+
+
+def _dequant2(base, _high, scale, _byte_indices, _shifts):
+    scales = _scales(scale)
+    groups = scales.numel()
+    codes = _grid_codes(base, groups, 2, 128).float()
+    # The grid code is the stored code; the format declares which code means zero.
+    codes = codes - float(QUANT_FORMATS["q2_g128_fp16"].zero_value_code)
+    return (codes * scales).to(torch.bfloat16)
+
+
 def _dequant4(base, _high, scale, _byte_indices, _shifts):
     scales = _scales(scale)
     unsigned = _low_g64(base, scales.numel())
@@ -473,6 +517,7 @@ def _dequant8(base, _high, scale, _byte_indices, _shifts):
 
 
 _EAGER_DEQUANTIZERS = {
+    2: _dequant2,
     4: _dequant4,
     5: _dequant5,
     6: _dequant6,
@@ -521,7 +566,10 @@ def dequantize_row_split(
         ).reshape(geometry.n, geometry.k_pad)
         return physical[:, : geometry.k]
     scales, codes = _unpack_codes(planes, spec, geometry)
-    physical = (codes.float() * scales.float().unsqueeze(-1)).reshape(
+    coefficients = codes.float()
+    if spec.zero_value_code is not None:
+        coefficients = coefficients - float(spec.zero_value_code)
+    physical = (coefficients * scales.float().unsqueeze(-1)).reshape(
         geometry.n, geometry.k_pad
     )
     return physical[:, : geometry.k].to(dtype)

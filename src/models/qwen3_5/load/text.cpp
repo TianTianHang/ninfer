@@ -108,6 +108,15 @@ TextWeights bind_text(Bindings& b, const TextConfig& config, const LoadOptions& 
     out.output_head = b.parameter("text/output_head", {config.vocab_size, config.hidden_size},
                                   std::move(head_inputs));
     out.final_norm  = b.direct("text/final_norm", {config.hidden_size});
+    if (config.hadamard) {
+        std::array<WeightId, 3> signs{};
+        for (std::size_t i = 0; i < signs.size(); ++i) {
+            signs[i] = b.direct("text/hadamard_signs/" +
+                                    std::to_string(config.hadamard->sign_widths[i]),
+                                {config.hadamard->sign_widths[i]}, QType::INT32);
+        }
+        out.hadamard_signs = signs;
+    }
     out.layers.reserve(config.num_hidden_layers);
     for (std::uint32_t i = 0; i < config.num_hidden_layers; ++i) {
         out.layers.push_back(

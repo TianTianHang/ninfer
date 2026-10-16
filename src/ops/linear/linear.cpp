@@ -4,6 +4,7 @@
 #include "ops/linear/bf16/bf16_dispatch.h"
 #include "ops/linear/fp8/fp8_dispatch.h"
 #include "ops/linear/nvfp4/nvfp4_dispatch.h"
+#include "ops/linear/q2/q2_dispatch.h"
 #include "ops/linear/q4/q4_dispatch.h"
 #include "ops/linear/q5/q5_dispatch.h"
 #include "ops/linear/q6/q6_dispatch.h"
@@ -77,6 +78,9 @@ void validate_linear_semantics(const Tensor& x, const Weight& w, const Tensor& o
 void dispatch_linear(const Tensor& x, const Weight& w, Tensor& out, LinearPolicy policy,
                      WorkspaceArena* workspace, cudaStream_t stream) {
     switch (w.qtype) {
+    case QType::Q2_G128_FP16:
+        detail::q2_dispatch(x, w, out, policy, workspace, stream);
+        return;
     case QType::Q4_G64_FP16:
         detail::q4_dispatch(x, w, out, policy, stream);
         return;
@@ -116,6 +120,10 @@ std::size_t linear_workspace_capacity_bytes(QType qtype, std::int32_t output_row
     }
 
     switch (qtype) {
+    case QType::Q2_G128_FP16:
+        // One BF16 transformed activation tile, reused through the q2 contraction.
+        return static_cast<std::size_t>(input_rows) * static_cast<std::size_t>(max_tokens) *
+               2u;
     case QType::Q4_G64_FP16:
         (void)detail::select_q4_launch(output_rows, input_rows, min_tokens, policy);
         (void)detail::select_q4_launch(output_rows, input_rows, max_tokens, policy);

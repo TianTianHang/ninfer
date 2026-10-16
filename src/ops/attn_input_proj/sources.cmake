@@ -1,4 +1,5 @@
 target_sources(ninfer_ops PRIVATE
+  "${CMAKE_CURRENT_LIST_DIR}/q2/q2_attn_input_proj.cu"
   "${CMAKE_CURRENT_LIST_DIR}/bf16/bf16_attn_input_decode.cu"
   "${CMAKE_CURRENT_LIST_DIR}/bf16/bf16_attn_input_gemm_mma.cu"
   "${CMAKE_CURRENT_LIST_DIR}/bf16/bf16_attn_input_small_t.cu"

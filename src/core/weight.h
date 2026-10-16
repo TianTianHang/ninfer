@@ -16,6 +16,11 @@ enum class QType : std::uint16_t {
     INT32               = 6,
     NVFP4               = 7,
     FP8_E4M3FN_ROW_BF16 = 8,
+    // Ternary weights on an unsigned 2-bit grid: code c in [0,3] represents
+    // (c - 1) * scale, i.e. the coefficients {-1, 0, +1, +2}. This is the ggml
+    // PQ2_0 codebook, so an existing PQ2_0 payload is imported without rewriting
+    // a single code or scale.
+    Q2_G128_FP16        = 9,
 };
 
 enum class QuantLayout : std::uint16_t {
@@ -47,6 +52,15 @@ struct Weight {
     std::int64_t scale_nb[4]   = {0, 0, 0, 0};
     float weight_scale_divisor = 0.0F;
     float input_scale_divisor  = 0.0F;
+
+    // Optional model-provided activation-side Hadamard metadata. The model owns
+    // and materializes the sign vector; Weight only borrows its device address.
+    const std::int32_t* hadamard_signs = nullptr;
+    std::int32_t hadamard_block_size = 0;
+    std::int32_t hadamard_perm_hd = 0;
+    std::int32_t hadamard_perm_nk = 0;
+    std::int32_t hadamard_perm_rep = 0;
+    bool inverse_hadamard = false;
 };
 
 } // namespace ninfer

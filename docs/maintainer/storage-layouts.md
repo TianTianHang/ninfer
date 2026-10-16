@@ -12,7 +12,7 @@ The storage registry contains exactly these identities:
 | Identity | Kind | Compatible numeric formats | Logical shape | Object alignment |
 |---|---|---|---|---:|
 | `contiguous_le_v1` | tensor layout | `bf16`, `fp32`, `int32` | rank `0..16` | 256 bytes |
-| `row_split_k128_v1` | tensor layout | `q4_g64_fp16`, `q5_g64_fp16`, `q6_g64_fp16`, `q8_g32_fp16` | rank 2 `[N,K]` | 256 bytes |
+| `row_split_k128_v1` | tensor layout | `q2_g128_fp16`, `q4_g64_fp16`, `q5_g64_fp16`, `q6_g64_fp16`, `q8_g32_fp16` | rank 2 `[N,K]` | 256 bytes |
 | `block_scale_k16_m128x4_v1` | tensor layout | `nvfp4` | rank 2 `[N,K]`, `N % 128 == 0`, `K % 64 == 0` | 256 bytes |
 | `row_scale_v1` | tensor layout | `fp8_e4m3fn_row_bf16` | rank 2 `[N,K]` | 256 bytes |
 | `raw_bytes_v1` | resource encoding | not applicable | nonempty byte string | 1 byte |
@@ -85,6 +85,7 @@ group size `G`:
 
 | Format | `b` | `G` | Base bytes per group `B` | High bytes per group `H` |
 |---|---:|---:|---:|---:|
+| `q2_g128_fp16` | 2 | 128 | 32 | 0 |
 | `q4_g64_fp16` | 4 | 64 | 32 | 0 |
 | `q5_g64_fp16` | 5 | 64 | 32 | 8 |
 | `q6_g64_fp16` | 6 | 64 | 32 | 16 |
@@ -102,10 +103,7 @@ physical_group_cnt = N * groups_per_row
 `K_pad` is physical geometry and is not added to the JSON `shape`. Because both registered group
 sizes divide 128, `groups_per_row` is integral.
 
-For the final partially logical group, lanes whose column is at least `K` have signed code zero. Its
-scale remains the scale of the logical group defined by the numeric-format contract. Any complete
-physical group after `logical_groups` has scale word `0x0000` and all codes zero. Physical padding
-therefore cannot change a decoded logical value.
+For signed-code formats, the final partially logical group uses signed code zero for lanes whose column is at least `K`. For Q2, those lanes use unsigned code `1`. Its scale remains the scale of the logical group defined by the numeric-format contract. Any complete physical group after `logical_groups` has scale word `0x0000` and the format's zero code (zero for signed formats, one for Q2). Physical padding therefore cannot change a decoded logical value.
 
 ### 3.2 Payload planes
 
@@ -132,7 +130,16 @@ Bytes belonging to one group are adjacent.
 
 ### 3.3 Base-code plane
 
-For Q4, Q5, and Q6, let `q[i]` be lane `i`'s signed code and let:
+For Q2, each group has 128 two-bit unsigned code slots. Lane `i` occupies the low-first slot
+`i % 4` of byte `floor(i / 4)`:
+
+```text
+base[floor(i / 4)] |= (code[i] & 0x03) << (2 * (i % 4))
+```
+
+Codes are the PQ2 codebook indices `0..3`, not signed two's-complement values. A Q2 group
+therefore occupies 32 base bytes.
+
 
 ```text
 u[i] = q[i] modulo 2^b

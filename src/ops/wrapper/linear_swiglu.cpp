@@ -5,6 +5,7 @@
 #include "ops/linear/nvfp4/nvfp4_format.h"
 #include "ops/linear_swiglu/fp8/fp8_linear_swiglu_plan.h"
 #include "ops/linear_swiglu/nvfp4/nvfp4_linear_swiglu_plan.h"
+#include "ops/linear_swiglu/q2/q2_linear_swiglu.h"
 #include "ops/linear_swiglu/q4/q4_linear_swiglu_plan.h"
 #include "ops/linear_swiglu/q8/q8_linear_swiglu_plan.h"
 
@@ -44,6 +45,10 @@ std::size_t linear_swiglu_workspace_capacity_bytes(QType qtype, std::int32_t gat
         (void)detail::q8_linear_swiglu_resolve_plan(
             {gate_up_rows, gate_up_rows / 2, input_rows, input_rows, max_tokens});
         return 0;
+    }
+    if (qtype == QType::Q2_G128_FP16) {
+        // The ternary route stages the transformed activation and gate/up projection.
+        return detail::q2_linear_swiglu_workspace_bytes(gate_up_rows, input_rows, max_tokens);
     }
     if (qtype == QType::Q4_G64_FP16) {
         return detail::q4_linear_swiglu_capacity_workspace_bytes(
@@ -104,8 +109,16 @@ void linear_swiglu(const Tensor& x, const Weight& gate_up_weight, Tensor& out, L
         gate_up_weight.qhigh == nullptr && gate_up_weight.high_plane_bytes == 0 && common_row_split;
     const bool nvfp4_weight = large_shape && gate_up_weight.qtype == QType::NVFP4;
     const bool fp8_weight   = large_shape && gate_up_weight.qtype == QType::FP8_E4M3FN_ROW_BF16;
-    if (!q4_weight && !q8_weight && !nvfp4_weight && !fp8_weight) {
+    const bool q2_weight = gate_up_weight.qtype == QType::Q2_G128_FP16 &&
+                           gate_up_weight.group_size == 128 && gate_up_weight.group == 128 &&
+                           gate_up_weight.qhigh == nullptr &&
+                           gate_up_weight.high_plane_bytes == 0 && common_row_split;
+    if (!q2_weight && !q4_weight && !q8_weight && !nvfp4_weight && !fp8_weight) {
         throw std::invalid_argument("linear_swiglu: unsupported weight");
+    }
+    if (q2_weight) {
+        detail::q2_linear_swiglu(x, gate_up_weight, out, ws, stream);
+        return;
     }
 
     if (fp8_weight) {

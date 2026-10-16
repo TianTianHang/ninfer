@@ -26,8 +26,22 @@ only for product support. A Python 3 interpreter is found when tests are configu
 pytest suites and conversion/evaluation scripts run separately from CMake and CTest.
 
 CUDA 13.1 and Python 3.11 describe the maintained environment, not configuration version gates.
-CMake also discovers FFmpeg without imposing library version floors. Actual language/API support
-is exercised by compilation and tests. The libcurl 7.85 minimum has a concrete API basis:
+The root `flake.nix` development shell provides the CUDA 13.1 toolkit, CMake, Ninja and a
+conversion Python. It carries no PyTorch: a CPU build is enough to encode artifacts, and a CUDA
+build is only needed to exercise device-side conversion, so install it separately (for example
+`pip install torch --index-url https://download.pytorch.org/whl/cpu`). Rank-1 tensors in the
+conversion path carry a value transform and no shape change.
+
+Running a product binary that was linked against the CUDA stub needs the real driver library,
+which NixOS exposes under `/run/opengl-driver/lib`:
+
+```sh
+LD_LIBRARY_PATH=/run/opengl-driver/lib ./build/apps/ninfer <model.ninfer> --prompt Hi
+```
+
+CMake also discovers FFmpeg without imposing
+library version floors. Actual language/API support is exercised by compilation and tests. The
+libcurl 7.85 minimum has a concrete API basis:
 media acquisition uses `CURLOPT_PROTOCOLS_STR` and `CURLOPT_REDIR_PROTOCOLS_STR`, introduced in
 [that release](https://curl.se/libcurl/c/CURLOPT_PROTOCOLS_STR.html).
 

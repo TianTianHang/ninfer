@@ -8,6 +8,7 @@
 #include "ops/linear/nvfp4/nvfp4_format.h"
 #include "ops/linear_add/fp8/fp8_linear_add_plan.h"
 #include "ops/linear_add/nvfp4/nvfp4_linear_add_plan.h"
+#include "ops/linear/q2/q2_dispatch.h"
 #include "ops/linear_add/q4/q4_linear_add_dispatch.h"
 #include "ops/linear_add/q5/q5_linear_add_plan.h"
 #include "ops/linear_add/q8/q8_linear_add_plan.h"
@@ -100,6 +101,9 @@ std::size_t linear_add_workspace_capacity_bytes(QType qtype, std::int32_t output
         (void)detail::bf16_linear_add_select(output_rows, input_rows, min_tokens);
         (void)detail::bf16_linear_add_select(output_rows, input_rows, max_tokens);
         return 0;
+    }
+    if (qtype == QType::Q2_G128_FP16) {
+        return static_cast<std::size_t>(input_rows) * static_cast<std::size_t>(max_tokens) * 2u;
     }
     if (qtype == QType::Q4_G64_FP16) {
         (void)detail::select_q4_linear_add(output_rows, input_rows, min_tokens);
@@ -243,6 +247,16 @@ void linear_add(const Tensor& x, const Weight& w, Tensor& residual_out, LinearPo
         return;
     }
 
+    if (w.qtype == QType::Q2_G128_FP16) {
+        if (w.layout != QuantLayout::RowSplit || w.scale_dtype != DType::FP16 ||
+            w.group_size != 128 || w.group != 128 || w.padded_shape[0] != w.n ||
+            w.padded_shape[1] != w.k || w.qdata == nullptr || w.scales == nullptr) {
+            throw std::invalid_argument("linear_add: weight must be q2_g128_fp16 row-split");
+        }
+        Tensor transformed = detail::q2_prepare_activation(x, w, ws, stream);
+        detail::q2_linear_launch(transformed, w, residual_out, stream, true);
+        return;
+    }
     throw std::invalid_argument("linear_add: unsupported weight format");
 }
 

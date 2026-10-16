@@ -102,10 +102,16 @@ def quantize_matrix(
 
     grouped = logical.reshape(geometry.n, geometry.groups_per_row, spec.group_size)
     max_abs = grouped.abs().amax(dim=2)
-    host_scales, host_reciprocal = _canonical_scale_words(max_abs, spec.qmax)
+    host_scales, host_reciprocal = _canonical_scale_words(
+        max_abs, 1 if spec.zero_value_code is not None else spec.qmax
+    )
     scales = host_scales.to(target)
     reciprocal = host_reciprocal.to(target)
-    codes = torch.clamp(
+    coefficients = torch.clamp(
         torch.round(grouped * reciprocal.unsqueeze(-1)), spec.qmin, spec.qmax
-    ).to(torch.int8)
+    )
+    if spec.zero_value_code is None:
+        codes = coefficients.to(torch.int8)
+    else:
+        codes = (coefficients + spec.zero_value_code).to(torch.int8)
     return QuantizedMatrix(codes=codes, scales=scales)

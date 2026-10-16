@@ -43,6 +43,14 @@ namespace ninfer::ops {
 void gdn_input_proj(const Tensor& x, const Weight& qk_weight, const Weight& value_z_weight,
                     Tensor& qkv, Tensor& z, cudaStream_t stream);
 
+// Lossless Q2 paired path. The caller provides workspace for one Hadamard-transformed
+// activation tile; Q/K/V/Z projection weights remain in their folded basis.
+[[nodiscard]] std::size_t q2_gdn_input_proj_workspace_bytes(std::int32_t input_rows,
+                                                            std::int32_t max_tokens);
+void q2_gdn_input_proj(const Tensor& x, const Weight& qk_weight, const Weight& value_z_weight,
+                       Tensor& qkv, Tensor& z, WorkspaceArena& workspace,
+                       cudaStream_t stream);
+
 /**
  * Single-parent GDN projection. Registered parent forms are:
  *

@@ -35,7 +35,7 @@ __global__ __launch_bounds__(Threads) void gdn_norm_gating_27_simt(
             for (int p = 0; p < 4; ++p) {
                 const float2 a = bf16x2_bits_to_float2(ap[p]), b = bf16x2_bits_to_float2(bp[p]);
                 const float2 n = bf16x2_bits_to_float2(np[p]), v = bf16x2_bits_to_float2(xp[p]);
-                const float z0 = v.x * (1.0f + n.x), z1 = v.y * (1.0f + n.y);
+                const float z0 = v.x * n.x, z1 = v.y * n.y;
                 aa[t] = fmaf(a.x, z0, aa[t]);
                 aa[t] = fmaf(a.y, z1, aa[t]);
                 bb[t] = fmaf(b.x, z0, bb[t]);
@@ -86,7 +86,7 @@ __global__ __launch_bounds__(Threads) void gdn_norm_gating_27_simt(
                 const auto i   = std::int64_t(first + t) * (D / 2) + pair;
                 const float2 v = __bfloat1622float2(reinterpret_cast<const __nv_bfloat162*>(x)[i]);
                 reinterpret_cast<__nv_bfloat162*>(h)[i] = __floats2bfloat162_rn(
-                    v.x * inverse[t] * (1 + n.x), v.y * inverse[t] * (1 + n.y));
+                    v.x * inverse[t] * n.x, v.y * inverse[t] * n.y);
             }
     }
 }

@@ -1,5 +1,11 @@
 cmake_minimum_required(VERSION 3.28)
 
+# CMake's compiler-generated dependency log is unstable with the Nix CUDA/Ninja
+# toolchain and makes every CUDA object appear stale on the next build.
+if(CMAKE_GENERATOR MATCHES "Ninja" AND NOT DEFINED CMAKE_DEPENDS_USE_COMPILER)
+  set(CMAKE_DEPENDS_USE_COMPILER OFF CACHE BOOL "Use CMake dependency scanning")
+endif()
+
 # The current implementation is compiled only for sm_120a. Set and validate the
 # architecture before CUDA compiler detection so CMake never injects a generic
 # host-toolchain default or accepts an unsupported target.

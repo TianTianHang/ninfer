@@ -38,7 +38,23 @@ def test_quantization_uses_stored_fp16_scale_and_zero_padding() -> None:
     assert torch.equal(decoded, expected)
 
 
-def test_quantization_uses_canonical_scale_rounding_on_cuda() -> None:
+def test_q2_quantization_uses_unsigned_grid_codes_and_zero_padding() -> None:
+    weight = torch.zeros((1, 128), dtype=torch.float32)
+    weight[0, :3] = torch.tensor([-1.2, 0.0, 1.2])
+    quantized = quantize_matrix(weight, "q2_g128_fp16", device="cpu")
+    expected_scale = torch.tensor([1.2], dtype=torch.float16)
+    assert torch.equal(quantized.scales, expected_scale.reshape(1, 1))
+    assert quantized.codes[0, 0, :3].tolist() == [0, 1, 2]
+    assert torch.all(quantized.codes[0, 0, 3:] == 1)
+    payload = encode_row_split(quantized.codes, quantized.scales, "q2_g128_fp16", weight.shape)
+    scales, codes = decode_row_split_codes(payload, "q2_g128_fp16", tuple(weight.shape))
+    assert torch.equal(scales, quantized.scales)
+    assert torch.equal(codes, quantized.codes)
+    decoded = dequantize_row_split(payload, "q2_g128_fp16", tuple(weight.shape), dtype=torch.float32)
+    expected = torch.tensor([-1.0, 0.0, 1.0]) * expected_scale.item()
+    assert torch.equal(decoded[0, :3], expected)
+
+
     # BF16 word 0x3636 divided by Q4 qmax is a known CUDA division boundary:
     # approximate device division rounds the FP16 scale to word 7, while the
     # ordered RNE oracle requires word 6.

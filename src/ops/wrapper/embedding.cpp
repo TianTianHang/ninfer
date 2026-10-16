@@ -168,6 +168,38 @@ void require_q8_metadata(const Weight& table, const Tensor& out) {
     }
 }
 
+void require_q2_metadata(const Weight& table, const Tensor& out) {
+    require_weight_2d(table);
+    if (table.layout != QuantLayout::RowSplit || table.scale_dtype != DType::FP16 ||
+        table.group_size != 128 || table.group != 128 || table.shape[1] != out.ne[0] ||
+        table.shape[1] % 1024 != 0 || table.padded_shape[0] != table.shape[0] ||
+        table.padded_shape[1] != table.shape[1]) {
+        throw std::invalid_argument("embedding: invalid Q2 shape or layout metadata");
+    }
+    if (table.qdata == nullptr || table.scales == nullptr || table.qhigh != nullptr ||
+        table.high_plane_bytes != 0) {
+        throw std::invalid_argument("embedding: invalid Q2 planes");
+    }
+    if ((reinterpret_cast<std::uintptr_t>(table.qdata) & 15u) != 0 ||
+        (reinterpret_cast<std::uintptr_t>(table.scales) & 15u) != 0) {
+        throw std::invalid_argument("embedding: Q2 planes must be 16-byte aligned");
+    }
+    const std::uint64_t groups = static_cast<std::uint64_t>(table.shape[1] / 128);
+    const std::uint64_t code_bytes = checked_mul_u64(
+        checked_mul_u64(static_cast<std::uint64_t>(table.shape[0]), groups), 32);
+    const std::uint64_t scale_bytes = checked_mul_u64(
+        checked_mul_u64(static_cast<std::uint64_t>(table.shape[0]), groups), 2);
+    const std::uint64_t scale_offset = ((code_bytes + 255u) / 256u) * 256u;
+    const std::uint64_t expected = scale_offset + scale_bytes;
+    if (table.payload_bytes != 0 && table.payload_bytes < expected) {
+        throw std::invalid_argument("embedding: Q2 payload is too small");
+    }
+    if (table.inverse_hadamard &&
+        (table.hadamard_signs == nullptr || table.hadamard_block_size != 1024)) {
+        throw std::invalid_argument("embedding: inverse Q2 table is missing Hadamard signs");
+    }
+}
+
 void require_fp8_metadata(const Weight& table, const Tensor& out) {
     constexpr std::int32_t kVocabulary = 248320;
     constexpr std::int32_t kHidden     = 5120;
@@ -231,6 +263,12 @@ void embedding(const Tensor& ids, const Weight& table, Tensor& out, cudaStream_t
         if (is_empty_T(ids, out)) { return; }
         require_non_empty_tensors(ids, out);
         detail::embed_gather_fp8_launch(ids, table, out, stream);
+        break;
+    case QType::Q2_G128_FP16:
+        require_q2_metadata(table, out);
+        if (is_empty_T(ids, out)) { return; }
+        require_non_empty_tensors(ids, out);
+        detail::embed_gather_q2_launch(ids, table, out, stream);
         break;
     default:
         throw std::invalid_argument("embedding: unsupported table qtype");

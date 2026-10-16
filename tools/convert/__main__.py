@@ -9,11 +9,13 @@ from pathlib import Path
 import sys
 from collections.abc import Mapping
 
+from .bonsai import build_model as build_bonsai_model
 from .official_recipes import RECIPES
 from .pipeline import convert
 from .proposal import DEFAULT_RANKING, add_official_proposal
 from .qwen3_5 import build_model
 from .recipe import Recipe
+from .sources.gguf import GgufSource
 from .sources.safetensors import SafetensorsSource
 
 
@@ -138,17 +140,26 @@ def main(argv=None):
         raise ValueError("select the base source with --model")
     overrides = _pairs(args.resource, "resource")
     with ExitStack() as stack:
-        base = stack.enter_context(SafetensorsSource(args.model))
-        sources = SourceInputs(base, paths, stack)
-        companions = {
-            key: sources[key] for key in ("dflash", "dflash2") if key in components
-        }
-        model = build_model(
-            base,
-            components=components,
-            companions=companions,
-            resource_overrides=overrides,
-        )
+        if args.recipe == "ternary_bonsai_2_27b":
+            if components != ("text",):
+                raise ValueError("ternary_bonsai_2_27b supports only the text component")
+            if paths:
+                raise ValueError("ternary_bonsai_2_27b does not accept companion sources")
+            base = stack.enter_context(GgufSource(args.model, half="bf16"))
+            sources = SourceInputs(base, {}, stack)
+            model = build_bonsai_model(base, resource_overrides=overrides)
+        else:
+            base = stack.enter_context(SafetensorsSource(args.model))
+            sources = SourceInputs(base, paths, stack)
+            companions = {
+                key: sources[key] for key in ("dflash", "dflash2") if key in components
+            }
+            model = build_model(
+                base,
+                components=components,
+                companions=companions,
+                resource_overrides=overrides,
+            )
         recipe = Recipe(model)
         _function(args.recipe)(model, recipe, sources)
         if args.proposal:

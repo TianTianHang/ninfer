@@ -44,6 +44,24 @@ std::uint64_t word_bytes(QType format) {
     }
 }
 
+// Code width of a grouped quantized format, used to derive its base-plane size.
+std::uint64_t code_bits(QType format) {
+    switch (format) {
+    case QType::Q2_G128_FP16:
+        return 2;
+    case QType::Q4_G64_FP16:
+        return 4;
+    case QType::Q5_G64_FP16:
+        return 5;
+    case QType::Q6_G64_FP16:
+        return 6;
+    case QType::Q8_G32_FP16:
+        return 8;
+    default:
+        throw std::invalid_argument("grouped code width requires a grouped integer format");
+    }
+}
+
 DType direct_dtype(QType format) {
     switch (format) {
     case QType::BF16:
@@ -98,6 +116,9 @@ WeightGeometry weight_geometry(QType format, QuantLayout layout,
     if (layout == QuantLayout::RowSplit) {
         std::uint64_t high_per_group = 0;
         switch (format) {
+        case QType::Q2_G128_FP16:
+            out.group_size = 128;
+            break;
         case QType::Q4_G64_FP16:
             out.group_size = 64;
             break;
@@ -117,7 +138,10 @@ WeightGeometry weight_geometry(QType format, QuantLayout layout,
         }
         out.padded_columns      = aligned(k, 128);
         const auto groups       = out.padded_columns / out.group_size;
-        out.code_bytes_per_row  = mul(groups, 32);
+        // The base plane always holds code_bits(group_size) bits per weight, so it is
+        // (bits * group_size) / 8 bytes per group for every registered grouped format.
+        const auto base_per_group = mul(out.group_size, code_bits(format)) / 8;
+        out.code_bytes_per_row  = mul(groups, base_per_group);
         out.high_bytes_per_row  = mul(groups, high_per_group);
         out.scale_bytes_per_row = mul(groups, 2);
         out.code_bytes          = mul(n, out.code_bytes_per_row);

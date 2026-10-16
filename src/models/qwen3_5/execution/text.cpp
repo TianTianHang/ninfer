@@ -309,8 +309,8 @@ void TextContext::mtp_forward_stem(const Tensor& ids, const Tensor& hidden,
 
     Tensor e = roots.normalized_embedding;
     Tensor h = roots.normalized_hidden;
-    ops::rmsnorm(emb, mtp_->embedding_norm, config_.rms_norm_eps, true, e, s);
-    ops::rmsnorm(flat_hidden, mtp_->hidden_norm, config_.rms_norm_eps, true, h, s);
+    ops::rmsnorm(emb, mtp_->embedding_norm, config_.rms_norm_eps, false, e, s);
+    ops::rmsnorm(flat_hidden, mtp_->hidden_norm, config_.rms_norm_eps, false, h, s);
 
     Tensor fc_in = roots.packed_input;
     ops::mtp_pack_fc_input(e, h, fc_in, s);
@@ -319,7 +319,7 @@ void TextContext::mtp_forward_stem(const Tensor& ids, const Tensor& hidden,
     project(fc_in, mtp_->input_projection, x, work_, s);
 
     ah = roots.attention_hidden;
-    ops::rmsnorm(x, mtp_->input_norm, config_.rms_norm_eps, true, ah, s);
+    ops::rmsnorm(x, mtp_->input_norm, config_.rms_norm_eps, false, ah, s);
 }
 
 void TextContext::mtp_forward_tail(Tensor& x, const Tensor& ah, const Tensor& positions,
@@ -351,8 +351,8 @@ void TextContext::mtp_forward_tail(Tensor& x, const Tensor& ah, const Tensor& po
                                        dimension(config_.attention->num_attention_heads), T});
     Tensor kn = results.normalized_key.view({dimension(config_.attention->head_dim),
                                              dimension(config_.attention->num_key_value_heads), T});
-    ops::rmsnorm(q, mtp_->query_norm, config_.rms_norm_eps, true, qn, s);
-    ops::rmsnorm(k, mtp_->key_norm, config_.rms_norm_eps, true, kn, s);
+    ops::rmsnorm(q, mtp_->query_norm, config_.rms_norm_eps, false, qn, s);
+    ops::rmsnorm(k, mtp_->key_norm, config_.rms_norm_eps, false, kn, s);
     Tensor rope_for_op = active_sequence_batch_ != 0 ? rope_positions.view({T}) : rope_positions;
     text_rope(rope_for_op, *config_.rope_parameters, qn, kn, ctx_.execution_view());
 
@@ -402,7 +402,7 @@ void TextContext::mtp_forward_tail(Tensor& x, const Tensor& ah, const Tensor& po
     ops::residual_add(o, x, s);
 
     Tensor mh = post.post_mixer_hidden;
-    ops::rmsnorm(x, mtp_->post_attention_norm, config_.rms_norm_eps, true, mh, s);
+    ops::rmsnorm(x, mtp_->post_attention_norm, config_.rms_norm_eps, false, mh, s);
 
     {
         auto post_mixer_scope = work_.scope();
@@ -410,7 +410,7 @@ void TextContext::mtp_forward_tail(Tensor& x, const Tensor& ah, const Tensor& po
     }
 
     Tensor flat_mtp_hidden = mtp_hidden.view({dimension(config_.hidden_size), T});
-    ops::rmsnorm(x, mtp_->final_norm, config_.rms_norm_eps, true, flat_mtp_hidden, s);
+    ops::rmsnorm(x, mtp_->final_norm, config_.rms_norm_eps, false, flat_mtp_hidden, s);
 }
 
 void TextContext::mtp_forward_core(const Tensor& ids, const Tensor& hidden, const Tensor& positions,
@@ -486,7 +486,7 @@ void TextContext::mtp_prefill_chunk(const Tensor& ids, const Tensor& hidden,
         Tensor kn =
             work_.alloc(DType::BF16, {dimension(config_.attention->head_dim),
                                       dimension(config_.attention->num_key_value_heads), T});
-        ops::rmsnorm(k, mtp_->key_norm, config_.rms_norm_eps, true, kn, s);
+        ops::rmsnorm(k, mtp_->key_norm, config_.rms_norm_eps, false, kn, s);
         text_rope(rope_positions, *config_.rope_parameters, kn, ctx_.execution_view());
         ops::kv_cache_append(kn, v, positions, mtp_kv_.layer_view(0), s);
 
@@ -517,7 +517,7 @@ void TextContext::mtp_prefill_chunk(const Tensor& ids, const Tensor& hidden,
         Tensor qn =
             work_.alloc(DType::BF16, {dimension(config_.attention->head_dim),
                                       dimension(config_.attention->num_attention_heads), 1});
-        ops::rmsnorm(q, mtp_->query_norm, config_.rms_norm_eps, true, qn, s);
+        ops::rmsnorm(q, mtp_->query_norm, config_.rms_norm_eps, false, qn, s);
         Tensor last_position = positions.slice(0, T - 1, 1);
         Tensor last_rope_position;
         if (rope_positions.ne[1] == 1) {
@@ -551,12 +551,12 @@ void TextContext::mtp_prefill_chunk(const Tensor& ids, const Tensor& hidden,
         ops::residual_add(o, x_last, s);
 
         Tensor mh = work_.alloc(DType::BF16, {dimension(config_.hidden_size), 1});
-        ops::rmsnorm(x_last, mtp_->post_attention_norm, config_.rms_norm_eps, true, mh, s);
+        ops::rmsnorm(x_last, mtp_->post_attention_norm, config_.rms_norm_eps, false, mh, s);
         {
             auto post_mixer_scope = work_.scope();
             ffn(mh, mtp_->ffn, x_last, {}, work_, ctx_.execution_view(), true);
         }
-        ops::rmsnorm(x_last, mtp_->final_norm, config_.rms_norm_eps, true, *final_hidden, s);
+        ops::rmsnorm(x_last, mtp_->final_norm, config_.rms_norm_eps, false, *final_hidden, s);
         proposal_argmax(*final_hidden, *logits, *draft_token);
     }
 }
@@ -703,7 +703,7 @@ void TextContext::ordinary_decode_batch(const Tensor& ids, const Tensor& cache_p
         ops::embedding(ids, *embed_, x, stream);
         NullTap tap;
         run_layers(x, Phase::Verify, tap);
-        ops::rmsnorm(x, *final_norm_, config_.rms_norm_eps, true, hidden, stream);
+        ops::rmsnorm(x, *final_norm_, config_.rms_norm_eps, false, hidden, stream);
         project(hidden, *lm_head_, logits, work_, stream);
     }
     work_.reset();
@@ -763,7 +763,7 @@ void TextContext::target_verify_batch_impl(const Tensor& ids, const Tensor& cach
         Tensor flat_hidden = hidden.view({dimension(config_.hidden_size), columns});
         Tensor flat_logits = logits.view({dimension(config_.vocab_size), columns});
         Tensor flat_tokens = target_tokens.view({columns});
-        ops::rmsnorm(x, *final_norm_, config_.rms_norm_eps, true, flat_hidden, stream);
+        ops::rmsnorm(x, *final_norm_, config_.rms_norm_eps, false, flat_hidden, stream);
         project(flat_hidden, *lm_head_, flat_logits, work_, stream);
         ops::argmax(flat_logits, flat_tokens,
                     dimension(parameters_.model.resources().public_token_count), stream);
@@ -847,7 +847,7 @@ void TextContext::attn_mix(const BlockParameters& w, Tensor& x, int fidx, Phase 
 
     const auto projection = workspace::text_attention_projection(work_, config_, T);
     Tensor h              = projection.hidden;
-    ops::rmsnorm(x, w.input_norm, config_.rms_norm_eps, true, h, s);
+    ops::rmsnorm(x, w.input_norm, config_.rms_norm_eps, false, h, s);
 
     Tensor q         = projection.query.view({dimension(config_.attention->head_dim),
                                               dimension(config_.attention->num_attention_heads), T});
@@ -869,8 +869,8 @@ void TextContext::attn_mix(const BlockParameters& w, Tensor& x, int fidx, Phase 
                                        dimension(config_.attention->num_attention_heads), T});
     Tensor kn = results.normalized_key.view({dimension(config_.attention->head_dim),
                                              dimension(config_.attention->num_key_value_heads), T});
-    ops::rmsnorm(q, p.query_norm, config_.rms_norm_eps, true, qn, s);
-    ops::rmsnorm(k, p.key_norm, config_.rms_norm_eps, true, kn, s);
+    ops::rmsnorm(q, p.query_norm, config_.rms_norm_eps, false, qn, s);
+    ops::rmsnorm(k, p.key_norm, config_.rms_norm_eps, false, kn, s);
     const Tensor& cache_positions =
         active_cache_positions_ != nullptr ? *active_cache_positions_ : io_.pos;
     const Tensor& rope_positions =
@@ -1069,7 +1069,7 @@ ops::SparseMoeHints TextContext::next_projection_hints(int layer) const {
 void TextContext::mlp_tail(const BlockParameters& weights, Tensor& x, Phase,
                            const ops::SparseMoeHints& hints) {
     Tensor h = workspace::post_mixer_hidden(work_, config_, x.ne[1]);
-    ops::rmsnorm(x, weights.post_attention_norm, config_.rms_norm_eps, true, h, ctx_.stream);
+    ops::rmsnorm(x, weights.post_attention_norm, config_.rms_norm_eps, false, h, ctx_.stream);
     ffn(h, weights.ffn, x, hints, work_, ctx_.execution_view());
 }
 
@@ -1265,7 +1265,7 @@ TextContext::prefill_impl(std::span<const int> ids, const TextPrefill* text_pref
             Tensor xf = prefill_hidden_.data != nullptr
                             ? matrix_window(prefill_hidden_, len)
                             : work_.alloc(DType::BF16, {dimension(config_.hidden_size), len});
-            ops::rmsnorm(x, *final_norm_, config_.rms_norm_eps, true, xf, s);
+            ops::rmsnorm(x, *final_norm_, config_.rms_norm_eps, false, xf, s);
 
             if (is_last) {
                 Tensor last_xf = xf.slice(1, len - 1, 1);

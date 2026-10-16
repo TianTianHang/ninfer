@@ -200,6 +200,8 @@ def grouped_absmax(request: PrepareRequest) -> PreparedMethod:
         or len(request.target.shape) != 2
     ):
         raise ValueError("grouped_absmax requires a grouped-integer matrix target")
+    if request.target.format == "q2_g128_fp16":
+        raise ValueError("q2_g128_fp16 requires import_encoded from a PQ2_0 source")
     _preflight(request)
     n, k = request.target.shape
 
@@ -241,9 +243,9 @@ def fp8_row_maxabs(request: PrepareRequest) -> PreparedMethod:
 
 
 def import_encoded(request: PrepareRequest) -> PreparedMethod:
-    """Preserve the current FP8/NVFP4 source codes, scales and weight divisor."""
+    """Preserve source FP8, NVFP4, or custom PQ2_0 codes and scales."""
     if (
-        request.target.format not in ("nvfp4", "fp8_e4m3fn_row_bf16")
+        request.target.format not in ("nvfp4", "fp8_e4m3fn_row_bf16", "q2_g128_fp16")
         or len(request.target.shape) != 2
     ):
         raise ValueError("import_encoded requires a known encoded matrix target")

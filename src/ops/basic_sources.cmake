@@ -5,6 +5,7 @@ target_sources(ninfer_ops PRIVATE
   "${CMAKE_CURRENT_LIST_DIR}/launcher/cast.cu"
   "${CMAKE_CURRENT_LIST_DIR}/launcher/causal_conv1d.cu"
   "${CMAKE_CURRENT_LIST_DIR}/launcher/embed_gather.cu"
+  "${CMAKE_CURRENT_LIST_DIR}/launcher/embed_gather_q2.cu"
   "${CMAKE_CURRENT_LIST_DIR}/launcher/gdn_gating.cu"
   "${CMAKE_CURRENT_LIST_DIR}/launcher/gelu.cu"
   "${CMAKE_CURRENT_LIST_DIR}/launcher/l2norm.cu"

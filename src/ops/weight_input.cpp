@@ -134,6 +134,8 @@ ProjectionWeights input_projection(std::span<const WeightInput, 4> inputs, bool 
         const auto format = result.weight.qtype;
         const bool supported =
             (moe && format == QType::Q8_G32_FP16) ||
+            (format == QType::Q2_G128_FP16 &&
+             (dense || attention || format == QType::Q2_G128_FP16)) ||
             (dense && (format == QType::NVFP4 || format == QType::FP8_E4M3FN_ROW_BF16 ||
                        (attention && format == QType::BF16)));
         require(supported, "input projection: unsupported single-parent format");
@@ -142,8 +144,13 @@ ProjectionWeights input_projection(std::span<const WeightInput, 4> inputs, bool 
     require(dense, "input projection: unsupported multi-parent geometry");
     const auto first  = single(inputs.first<2>());
     const auto second = single(inputs.last<2>());
-    require(first.weight.qtype == QType::Q4_G64_FP16 && second.weight.qtype == QType::Q5_G64_FP16,
-            "input projection: paired native form requires Q4 and Q5");
+    // Two qualified pairings: the Q4/Q5 groupwise form, and the ternary form where
+    // each member parent already carries a fused pair (query+key, value+query-side).
+    const bool q4q5 = first.weight.qtype == QType::Q4_G64_FP16 &&
+                      second.weight.qtype == QType::Q5_G64_FP16;
+    const bool ternary = first.weight.qtype == QType::Q2_G128_FP16 &&
+                         second.weight.qtype == QType::Q2_G128_FP16;
+    require(q4q5 || ternary, "input projection: paired native form requires Q4+Q5 or Q2+Q2");
     return PairedProjectionWeights{first.weight, second.weight};
 }
 
@@ -168,8 +175,9 @@ SingleProjectionWeight prepare_attn_input_proj_weights(const WeightInput& query,
             "QKV input projection: unsupported logical geometry");
     const std::array inputs{query, key, value};
     auto result = single(inputs);
-    require(result.weight.qtype == QType::Q8_G32_FP16,
-            "QKV input projection: native form requires Q8");
+    require(result.weight.qtype == QType::Q8_G32_FP16 ||
+                result.weight.qtype == QType::Q2_G128_FP16,
+            "QKV input projection: native form requires Q8 or Q2");
     return result;
 }
 

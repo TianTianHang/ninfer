@@ -66,6 +66,7 @@ struct BlockWeights {
 struct TextWeights {
     WeightId token_embedding, output_head, final_norm;
     WeightUseId output_head_use;
+    std::optional<std::array<WeightId, 3>> hadamard_signs;
     std::vector<BlockWeights> layers;
 };
 

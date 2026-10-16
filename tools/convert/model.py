@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Any, Callable
 
 from .sources.logical import LogicalSource
-from .sources.safetensors import SafetensorsSource
 
-SourceFactory = Callable[[SafetensorsSource, str | None], LogicalSource]
+
+SourceFactory = Callable[[Any, str | None], LogicalSource]
 
 
 @dataclass(frozen=True, slots=True)

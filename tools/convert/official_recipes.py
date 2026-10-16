@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from .bonsai import recipe as ternary_bonsai_2_27b
 from .methods import cast_direct, fp8_row_maxabs, grouped_absmax, import_encoded
 
 Q4 = "q4_g64_fp16"
@@ -180,4 +181,5 @@ RECIPES = {
     "qwen3_8_27b": qwen3_8_27b,
     "qwen3_8_27b_nvfp4": qwen3_8_27b_nvfp4,
     "qwen3_6_35b_a3b": qwen3_6_35b_a3b,
+    "ternary_bonsai_2_27b": ternary_bonsai_2_27b,
 }

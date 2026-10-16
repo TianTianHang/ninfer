@@ -2,6 +2,7 @@
 
 #include "core/weight_view.h"
 
+#include <algorithm>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -21,16 +22,60 @@ auto with_context(const std::string& context, Function&& function) {
 
 class Prepare {
 public:
-    explicit Prepare(const Model& model) : model_(model) {}
+    explicit Prepare(const Model& model, const std::optional<std::array<Tensor, 3>>* signs = nullptr)
+        : model_(model), signs_(signs) {}
+
+    void hadamard(Weight& weight, std::string_view name, bool inverse = false) const {
+        if (weight.qtype != QType::Q2_G128_FP16 || signs_ == nullptr || !signs_->has_value() ||
+            !model_.config().text.hadamard) {
+            return;
+        }
+        const auto& config = *model_.config().text.hadamard;
+        const auto found = std::find(config.sign_widths.begin(), config.sign_widths.end(),
+                                     static_cast<std::uint32_t>(weight.k));
+        if (found == config.sign_widths.end()) {
+            throw std::invalid_argument(std::string(name) + ": missing Hadamard signs for K");
+        }
+        const auto index = static_cast<std::size_t>(found - config.sign_widths.begin());
+        weight.hadamard_signs = static_cast<const std::int32_t*>((*signs_)->at(index).data);
+        weight.hadamard_block_size = static_cast<std::int32_t>(config.block_size);
+        weight.inverse_hadamard = inverse;
+        if (config.gdn_v_grouped && name.ends_with("/gdn/output")) {
+            const auto& gdn = model_.config().text.gdn.value();
+            weight.hadamard_perm_hd = gdn.linear_value_head_dim;
+            weight.hadamard_perm_nk = gdn.linear_num_key_heads;
+            weight.hadamard_perm_rep = gdn.linear_num_value_heads / gdn.linear_num_key_heads;
+        }
+    }
+
+    void hadamard(LinearParameters& parameter, std::string_view name) const {
+        hadamard(parameter.weight, name);
+    }
+
+    void hadamard(ops::ProjectionWeights& projection, std::string_view name) const {
+        if (auto* single = std::get_if<LinearParameters>(&projection)) {
+            hadamard(*single, name);
+        } else {
+            auto& pair = std::get<ops::PairedProjectionWeights>(projection);
+            hadamard(pair.first, name);
+            hadamard(pair.second, name);
+        }
+    }
 
     LinearParameters linear(WeightId id) const {
-        return with_context(model_.weight(id).name,
-                            [&] { return ops::prepare_linear_weight(model_.input(id)); });
+        return with_context(model_.weight(id).name, [&] {
+            auto result = ops::prepare_linear_weight(model_.input(id));
+            hadamard(result, model_.weight(id).name);
+            return result;
+        });
     }
 
     LinearParameters linear(WeightUseId id) const {
-        return with_context(model_.weight(id.parameter).name,
-                            [&] { return ops::prepare_linear_weight(model_.input(id)); });
+        return with_context(model_.weight(id.parameter).name, [&] {
+            auto result = ops::prepare_linear_weight(model_.input(id));
+            hadamard(result, model_.weight(id.parameter).name);
+            return result;
+        });
     }
 
     Tensor tensor(WeightId id) const {
@@ -53,12 +98,11 @@ public:
     }
 
     DenseParameters dense(const DenseWeights& w) const {
-        return {with_context(model_.weight(w.gate).name,
-                             [&] {
-                                 return ops::prepare_linear_swiglu_weight(model_.input(w.gate),
-                                                                          model_.input(w.up));
-                             }),
-                linear(w.down)};
+        auto gate_up = with_context(model_.weight(w.gate).name, [&] {
+            return ops::prepare_linear_swiglu_weight(model_.input(w.gate), model_.input(w.up));
+        });
+        hadamard(gate_up.weight, model_.weight(w.gate).name);
+        return {std::move(gate_up), linear(w.down)};
     }
 
     FfnParameters ffn(const BlockWeights& w) const {
@@ -89,24 +133,28 @@ public:
         out.post_attention_norm = tensor(w.post_attention_norm);
         out.ffn                 = ffn(w);
         if (const auto* a = std::get_if<AttentionWeights>(&w.mixer)) {
-            out.mixer = AttentionParameters{
-                ops::prepare_attn_input_proj_weights(model_.input(a->query), model_.input(a->key),
-                                                     model_.input(a->gate), model_.input(a->value)),
-                tensor(a->query_norm), tensor(a->key_norm), linear(a->output)};
+            auto projection = ops::prepare_attn_input_proj_weights(
+                model_.input(a->query), model_.input(a->key), model_.input(a->gate),
+                model_.input(a->value));
+            hadamard(projection, model_.weight(a->query).name);
+            out.mixer = AttentionParameters{std::move(projection), tensor(a->query_norm),
+                                            tensor(a->key_norm), linear(a->output)};
             out.projection_prefetch =
                 prefetch(std::get<AttentionParameters>(out.mixer).projection, a->query);
         } else {
             const auto& g = std::get<GdnWeights>(w.mixer);
-            out.mixer     = GdnParameters{
-                ops::prepare_gdn_input_proj_weights(model_.input(g.query), model_.input(g.key),
-                                                        model_.input(g.value), model_.input(g.z)),
+            auto projection = ops::prepare_gdn_input_proj_weights(
+                model_.input(g.query), model_.input(g.key), model_.input(g.value),
+                model_.input(g.z));
+            hadamard(projection, model_.weight(g.query).name);
+            auto output = linear(g.output);
+            hadamard(output, model_.weight(g.output).name);
+            out.mixer = GdnParameters{
+                std::move(projection),
                 ops::prepare_gdn_gating_proj_weights(model_.input(g.a_projection),
-                                                         model_.input(g.b_projection)),
-                tensor(g.a_log),
-                tensor(g.dt_bias),
-                tensor(g.convolution),
-                tensor(g.norm),
-                linear(g.output)};
+                                                     model_.input(g.b_projection)),
+                tensor(g.a_log), tensor(g.dt_bias), tensor(g.convolution), tensor(g.norm),
+                std::move(output)};
             out.projection_prefetch =
                 prefetch(std::get<GdnParameters>(out.mixer).projection, g.query);
         }
@@ -253,16 +301,27 @@ public:
 
 private:
     const Model& model_;
+    const std::optional<std::array<Tensor, 3>>* signs_ = nullptr;
 };
 
 } // namespace
 
 Parameters::Parameters(const Model& source) : model(source) {
-    const Prepare prepare(model);
-    const auto& w        = model.weights();
+    const auto& w = model.weights();
+    const Prepare raw_prepare(model);
+    if (w.text.hadamard_signs) {
+        std::array<Tensor, 3> signs{};
+        for (std::size_t i = 0; i < signs.size(); ++i) {
+            signs[i] = raw_prepare.tensor(w.text.hadamard_signs->at(i));
+        }
+        text.hadamard_signs = signs;
+    }
+    const Prepare prepare(model, &text.hadamard_signs);
     text.token_embedding = native_weight(model.weight(w.text.token_embedding).view);
-    text.output_head     = prepare.linear(w.text.output_head_use);
-    text.final_norm      = prepare.tensor(w.text.final_norm);
+    prepare.hadamard(text.token_embedding, "text/token_embedding", true);
+    text.output_head = prepare.linear(w.text.output_head_use);
+    prepare.hadamard(text.output_head, "text/output_head");
+    text.final_norm  = prepare.tensor(w.text.final_norm);
     text.layers.reserve(w.text.layers.size());
     for (std::size_t i = 0; i < w.text.layers.size(); ++i) {
         text.layers.push_back(with_context("text/layers/" + std::to_string(i),

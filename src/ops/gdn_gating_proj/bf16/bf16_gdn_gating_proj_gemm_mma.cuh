@@ -156,7 +156,7 @@ __global__ __launch_bounds__(Warps * 32, 1) void bf16_gdn_gating_proj_gemm_mma_k
                         const float2 value              = __bfloat1622float2(source[pair]);
                         const float2 weight             = __bfloat1622float2(gain[pair]);
                         const __nv_bfloat162 normalized = __floats2bfloat162_rn(
-                            value.x * (1.0f + weight.x), value.y * (1.0f + weight.y));
+                            value.x * weight.x, value.y * weight.y);
                         target[pair] = normalized;
                     }
                 } else {
@@ -316,7 +316,7 @@ __global__ __launch_bounds__(Warps * 32, 1) void bf16_gdn_gating_proj_gemm_mma_k
                 const float inv    = rsqrtf(sum / static_cast<float>(kBf16GdnHidden) + norm_eps);
                 const float value  = __bfloat162float(x[i]);
                 const float weight = __bfloat162float(norm_weight[k]);
-                normalized_x[i]    = __float2bfloat16_rn(value * inv * (1.0F + weight));
+                normalized_x[i]    = __float2bfloat16_rn(value * inv * weight);
             }
         }
         for (int i = block_linear * kThreads + tid; i < elems; i += grid_threads) {

@@ -107,7 +107,8 @@ TextConfig text(const Json& value, bool mtp) {
         {"num_attention_heads", "num_key_value_heads", "head_dim", "rope_parameters",
          "linear_num_key_heads", "linear_key_head_dim", "linear_num_value_heads",
          "linear_value_head_dim", "linear_conv_kernel_dim", "intermediate_size", "num_experts",
-         "num_experts_per_tok", "moe_intermediate_size", "shared_expert_intermediate_size"},
+         "num_experts_per_tok", "moe_intermediate_size", "shared_expert_intermediate_size",
+         "hadamard"},
         "text config");
     TextConfig out;
     out.architecture = resolve_architecture(
@@ -154,6 +155,32 @@ TextConfig text(const Json& value, bool mtp) {
         }
         (void)gdn.conv_channels();
         out.gdn = gdn;
+    }
+    if (value.contains("hadamard")) {
+        const auto& raw = value.at("hadamard");
+        require_members(raw, {"block_size", "sign_widths", "gdn_v_grouped"}, {},
+                        "text Hadamard config");
+        HadamardConfig hadamard;
+        hadamard.block_size = dimension(raw, "block_size");
+        if (hadamard.block_size != 1024) {
+            throw ArtifactError("Qwen3.5 Hadamard block_size must be 1024");
+        }
+        const auto& widths = raw.at("sign_widths");
+        if (!widths.is_array() || widths.size() != hadamard.sign_widths.size()) {
+            throw ArtifactError("Hadamard sign_widths must contain the three registered widths");
+        }
+        for (std::size_t i = 0; i < hadamard.sign_widths.size(); ++i) {
+            hadamard.sign_widths[i] = integer(widths[i], "Hadamard sign width");
+            if (hadamard.sign_widths[i] == 0 ||
+                hadamard.sign_widths[i] % hadamard.block_size != 0) {
+                throw ArtifactError("Hadamard sign width must be a positive multiple of 1024");
+            }
+        }
+        if (!raw.at("gdn_v_grouped").is_boolean()) {
+            throw ArtifactError("Hadamard gdn_v_grouped must be boolean");
+        }
+        hadamard.gdn_v_grouped = raw.at("gdn_v_grouped").get<bool>();
+        out.hadamard = hadamard;
     }
     if (out.architecture == Architecture::Qwen3_5Moe) {
         if (value.contains("intermediate_size")) {

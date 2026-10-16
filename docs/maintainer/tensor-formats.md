@@ -1,6 +1,6 @@
 # NInfer Persistent Tensor Numeric Formats
 
-This reference defines the nine persistent numeric tensor formats accepted by current `.ninfer`
+This reference defines the ten persistent numeric tensor formats accepted by current `.ninfer`
 artifacts: their logical words, quantization semantics, canonical reference encoders where
 applicable, and conformance boundaries. [Container framing](artifact-container.md),
 [physical layouts](storage-layouts.md), weight recipes and runtime-state codecs are defined
@@ -8,7 +8,7 @@ separately.
 
 ## 1. Registered formats
 
-NInfer has exactly nine persistent numeric tensor formats in four categories.
+NInfer has exactly ten persistent numeric tensor formats in four categories.
 
 Direct scalar formats preserve one logical scalar word per tensor element:
 
@@ -22,6 +22,7 @@ Grouped quantized-weight formats preserve signed codes plus one scale per logica
 
 | Canonical name | Code width | Group size | Legal signed codes | Scale | Full-group logical bits/weight |
 |---|---:|---:|---:|---|---:|
+| `q2_g128_fp16` | 2 | 128 | unsigned codes `0..3` (`c-1` coefficients) | one binary16 scale/group | 2.125 |
 | `q4_g64_fp16` | 4 | 64 | `[-8, 7]` | one binary16 scale/group | 4.25 |
 | `q5_g64_fp16` | 5 | 64 | `[-16, 15]` | one binary16 scale/group | 5.25 |
 | `q6_g64_fp16` | 6 | 64 | `[-32, 31]` | one binary16 scale/group | 6.25 |
@@ -356,11 +357,27 @@ them at its own boundary. A logical encoder produces no physical padding.
 
 ## 5. Grouped signed-integer code domains
 
-All four schemes are zero-point-free, weight-only signed-integer schemes. “Symmetric” in this
+All five schemes are weight-only grouped integer schemes. Q4, Q5, Q6 and Q8 are zero-point-free signed-code schemes. Q2 uses an unsigned codebook index with a fixed zero-code value of one.
+ “Symmetric” in this
 document means that reconstruction is `scale * signed_code` with zero point zero. It does not mean
 that every legal interval has equal positive and negative magnitude.
 
-### 5.1 Q4, Q5, and Q6
+### 5.1 PQ2_0
+
+`q2_g128_fp16` preserves the GGML `PQ2_0` codebook. Each group has 128 lanes, one binary16
+scale `d`, and 32 code bytes. Lane `j` uses the low-first two-bit slot:
+
+```text
+c[j] = (code_bytes[j // 4] >> (2 * (j % 4))) & 3
+w_hat[j] = (c[j] - 1) * exact_binary16_to_binary32(d)
+```
+
+Codes `0, 1, 2, 3` therefore represent coefficients `-1, 0, +1, +2`; code `1` is the fixed
+zero value. Q2 is lossless when importing a PQ2_0 source and must not use the signed-code
+`grouped_absmax` method. Physical K padding uses code `1` and a zero scale for complete unused
+groups. The row-split codec stores 32 code bytes per group followed by the aligned scale plane.
+
+### 5.2 Q4, Q5, and Q6
 
 The logical code is a two's-complement signed integer of the stated width:
 
@@ -382,7 +399,7 @@ This is not offset binary, sign-magnitude encoding, a codebook index, or an unsi
 zero-point convention. A storage layout may split or reorder the bits, but after layout decoding the
 logical word and signed value must be exactly those defined here.
 
-### 5.2 Q8
+### 5.3 Q8
 
 `q8_g32_fp16` uses an 8-bit two's-complement signed code with the deliberately restricted interval
 `[-127, 127]`. The byte pattern `0x80`, which would represent `-128`, is outside the valid artifact
@@ -411,10 +428,7 @@ Negative finite values, negative zero, positive or negative infinity, and every 
 Positive binary16 subnormals are valid; consumers must preserve their defined value. In particular,
 the minimum positive binary16 scale is `2^-24`, bit pattern `0x0001`.
 
-If a stored scale is positive zero, every logical code in that group must be zero. The converse is
-not required: a valid representation may have a positive scale and all-zero codes. The canonical
-reference encoder nevertheless emits the unique `scale = +0, codes = 0` representation for an
-all-zero source group.
+For the signed-code schemes, if a stored scale is positive zero, every logical code in that group must be zero. For Q2, every logical code must instead be the zero code `1`. The converse is not required: a valid representation may have a positive scale and all-zero coefficients.
 
 ### 6.2 Abstract reconstruction
 

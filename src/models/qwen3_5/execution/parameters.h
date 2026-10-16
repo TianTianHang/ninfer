@@ -53,6 +53,7 @@ struct TextParameters {
     Weight token_embedding;
     LinearParameters output_head;
     Tensor final_norm;
+    std::optional<std::array<Tensor, 3>> hadamard_signs;
     std::vector<BlockParameters> layers;
 };
 

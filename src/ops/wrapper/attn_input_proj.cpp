@@ -3,6 +3,7 @@
 
 #include "ops/attn_input_proj/bf16/bf16_attn_input_plan.h"
 #include "ops/attn_input_proj/fp8/fp8_attn_input_plan.h"
+#include "ops/attn_input_proj/q2/q2_attn_input_proj.h"
 #include "ops/attn_input_proj/nvfp4/nvfp4_attn_input_plan.h"
 #include "ops/attn_input_proj/q4_q5/q4_q5_attn_input_plan.h"
 #include "ops/attn_input_proj/q8/q8_attn_input_plan.h"
@@ -105,6 +106,25 @@ void dispatch_single_parent(const Tensor& x, const Weight& weight, Tensor& q, Te
         return;
     }
 
+    if (weight.qtype == QType::Q2_G128_FP16) {
+        constexpr std::int32_t kHidden = 5120;
+        constexpr std::int32_t kQRows  = 6144;
+        constexpr std::int32_t kKvRows = 1024;
+        constexpr std::int32_t kRows   = 14336;
+        const std::int32_t cols        = x.ne[1];
+        if (cols <= 0) { throw std::invalid_argument("attn_input_proj: T must be positive"); }
+        require_matrix(x, kHidden, cols, "x");
+        require_matrix(q, kQRows, cols, "q");
+        require_matrix(gate, kQRows, cols, "gate");
+        require_matrix(k, kKvRows, cols, "k");
+        require_matrix(v, kKvRows, cols, "v");
+        if (weight.n != kRows || weight.k != kHidden || weight.group_size != 128) {
+            throw std::invalid_argument("attn_input_proj: invalid Q2 parent weight");
+        }
+        detail::q2_attn_input_proj(x, weight, q, gate, k, v, workspace, stream);
+        return;
+    }
+
     if (weight.qtype == QType::NVFP4) {
         constexpr std::int32_t kHidden = 5120;
         constexpr std::int32_t kQRows  = 6144;
@@ -172,6 +192,11 @@ std::size_t attn_input_proj_workspace_capacity_bytes(QType parent_qtype, std::in
     }
 
     switch (parent_qtype) {
+    case QType::Q2_G128_FP16:
+        if (parent_rows != 14336 || input_rows != 5120) {
+            throw std::invalid_argument("attn_input_proj workspace: unsupported Q2 profile");
+        }
+        return static_cast<std::size_t>(input_rows) * static_cast<std::size_t>(max_tokens) * 2u;
     case QType::BF16:
         if (parent_rows != 14336 || input_rows != 5120) {
             throw std::invalid_argument("attn_input_proj workspace: unsupported BF16 profile");
