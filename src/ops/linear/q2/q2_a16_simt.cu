@@ -189,6 +189,10 @@ __global__ void q2_a16_simt_kernel(const __nv_bfloat16* __restrict__ x,
 
 void q2_linear_launch(const Tensor& x, const Weight& weight, Tensor& out, cudaStream_t stream,
                       bool accumulate) {
+    if (weight.qtype == QType::PTQ1_G128_FP16) {
+        ptq1_linear_launch(x, weight, out, stream, accumulate);
+        return;
+    }
     const int n = out.ne[0];
     const int t = out.ne[1];
     const int k = x.ne[0];
@@ -222,6 +226,29 @@ void q2_dispatch(const Tensor& x, const Weight& weight, Tensor& out, LinearPolic
                  WorkspaceArena* workspace, cudaStream_t stream) {
     if (!valid_linear_policy(policy)) {
         throw std::invalid_argument("q2 linear: unsupported policy");
+    }
+    if (weight.qtype == QType::PTQ1_G128_FP16) {
+        if (weight.layout != QuantLayout::RowSplit || weight.ndim != 2 ||
+            weight.group_size != kGroup || weight.group != kGroup ||
+            weight.shape[0] != weight.n || weight.shape[1] != weight.k ||
+            weight.padded_shape[0] != weight.n || weight.padded_shape[1] != weight.k ||
+            weight.qdata == nullptr || weight.qhigh != nullptr || weight.scales != nullptr) {
+            throw std::invalid_argument("ptq1 linear: weight must be ptq1_g128_fp16 row-split");
+        }
+        if (out.ne[0] != weight.n || x.ne[0] != weight.k) {
+            throw std::invalid_argument("ptq1 linear: weight geometry differs from its operands");
+        }
+        if (weight.hadamard_signs != nullptr) {
+            if (workspace == nullptr) {
+                throw std::invalid_argument("ptq1 linear: Hadamard transform requires workspace");
+            }
+            auto scope = workspace->scope();
+            Tensor transformed = q2_prepare_activation(x, weight, *workspace, stream);
+            ptq1_linear_launch(transformed, weight, out, stream, false);
+        } else {
+            ptq1_linear_launch(x, weight, out, stream, false);
+        }
+        return;
     }
     if (weight.qtype != QType::Q2_G128_FP16 || weight.layout != QuantLayout::RowSplit ||
         weight.scale_dtype != DType::FP16 || weight.ndim != 2 || weight.group_size != kGroup ||

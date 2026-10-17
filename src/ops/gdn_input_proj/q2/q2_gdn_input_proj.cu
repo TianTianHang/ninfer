@@ -35,20 +35,28 @@ Weight slice_rows(const Weight& parent, std::int32_t first_row, std::int32_t row
     Weight out = parent;
     out.n = rows;
     out.shape[0] = out.padded_shape[0] = rows;
+    const std::uint64_t row_bytes = groups * (parent.qtype == QType::PTQ1_G128_FP16 ? 28u : 32u);
     out.qdata = static_cast<const std::uint8_t*>(parent.qdata) +
-                static_cast<std::uint64_t>(first_row) * groups * 32u;
-    out.scales = static_cast<const std::uint8_t*>(parent.scales) +
-                 static_cast<std::uint64_t>(first_row) * groups * 2u;
+                static_cast<std::uint64_t>(first_row) * row_bytes;
+    if (parent.scales != nullptr) {
+        out.scales = static_cast<const std::uint8_t*>(parent.scales) +
+                     static_cast<std::uint64_t>(first_row) * groups * 2u;
+    } else {
+        out.scales = nullptr;
+    }
     return out;
 }
 
 void validate_ternary(const Weight& weight, std::int32_t rows, const char* label) {
-    if (weight.qtype != QType::Q2_G128_FP16 || weight.layout != QuantLayout::RowSplit ||
-        weight.scale_dtype != DType::FP16 || weight.group_size != 128 || weight.group != 128 ||
-        weight.n != rows || weight.k != 5120 || weight.shape[0] != rows ||
-        weight.shape[1] != 5120 || weight.padded_shape[0] != rows ||
-        weight.padded_shape[1] != 5120 || weight.qdata == nullptr || weight.scales == nullptr ||
-        weight.qhigh != nullptr) {
+    const bool q2 = weight.qtype == QType::Q2_G128_FP16;
+    const bool ptq1 = weight.qtype == QType::PTQ1_G128_FP16;
+    if ((!q2 && !ptq1) || weight.layout != QuantLayout::RowSplit ||
+        (q2 && weight.scale_dtype != DType::FP16) || weight.group_size != 128 ||
+        weight.group != 128 || weight.n != rows || weight.k != 5120 ||
+        weight.shape[0] != rows || weight.shape[1] != 5120 ||
+        weight.padded_shape[0] != rows || weight.padded_shape[1] != 5120 ||
+        weight.qdata == nullptr || weight.qhigh != nullptr ||
+        (q2 && weight.scales == nullptr) || (ptq1 && weight.scales != nullptr)) {
         throw std::invalid_argument(std::string("gdn_input_proj: invalid ") + label);
     }
 }
@@ -83,8 +91,8 @@ void q2_gdn_input_proj_single(const Tensor& x, const Weight& parent, Tensor& qkv
                               WorkspaceArena& workspace, cudaStream_t stream) {
     constexpr std::int32_t kQkRows = 4096;
     constexpr std::int32_t kValueZRows = 12288;
-    if (parent.qtype != QType::Q2_G128_FP16 || parent.n != kQkRows + kValueZRows ||
-        parent.k != 5120) {
+    if ((parent.qtype != QType::Q2_G128_FP16 && parent.qtype != QType::PTQ1_G128_FP16) ||
+        parent.n != kQkRows + kValueZRows || parent.k != 5120) {
         throw std::invalid_argument("gdn_input_proj: invalid single-parent q2 weight");
     }
     const Weight qk = slice_rows(parent, 0, kQkRows);

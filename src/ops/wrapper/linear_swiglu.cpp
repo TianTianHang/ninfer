@@ -46,7 +46,7 @@ std::size_t linear_swiglu_workspace_capacity_bytes(QType qtype, std::int32_t gat
             {gate_up_rows, gate_up_rows / 2, input_rows, input_rows, max_tokens});
         return 0;
     }
-    if (qtype == QType::Q2_G128_FP16) {
+    if (qtype == QType::Q2_G128_FP16 || qtype == QType::PTQ1_G128_FP16) {
         // The ternary route stages the transformed activation and gate/up projection.
         return detail::q2_linear_swiglu_workspace_bytes(gate_up_rows, input_rows, max_tokens);
     }
@@ -113,10 +113,17 @@ void linear_swiglu(const Tensor& x, const Weight& gate_up_weight, Tensor& out, L
                            gate_up_weight.group_size == 128 && gate_up_weight.group == 128 &&
                            gate_up_weight.qhigh == nullptr &&
                            gate_up_weight.high_plane_bytes == 0 && common_row_split;
-    if (!q2_weight && !q4_weight && !q8_weight && !nvfp4_weight && !fp8_weight) {
+    const bool ptq1_weight = large_shape && gate_up_weight.qtype == QType::PTQ1_G128_FP16 &&
+                             gate_up_weight.layout == QuantLayout::RowSplit &&
+                             gate_up_weight.group_size == 128 && gate_up_weight.group == 128 &&
+                             gate_up_weight.qdata != nullptr && gate_up_weight.qhigh == nullptr &&
+                             gate_up_weight.scales == nullptr && gate_up_weight.ndim == 2 &&
+                             gate_up_weight.shape[0] == gate_up_weight.n &&
+                             gate_up_weight.shape[1] == gate_up_weight.k;
+    if (!q2_weight && !ptq1_weight && !q4_weight && !q8_weight && !nvfp4_weight && !fp8_weight) {
         throw std::invalid_argument("linear_swiglu: unsupported weight");
     }
-    if (q2_weight) {
+    if (q2_weight || ptq1_weight) {
         detail::q2_linear_swiglu(x, gate_up_weight, out, ws, stream);
         return;
     }

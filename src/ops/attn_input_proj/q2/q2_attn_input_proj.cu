@@ -25,10 +25,15 @@ Weight slice_rows(const Weight& parent, std::int32_t first_row, std::int32_t row
     Weight out                = parent;
     out.n                     = rows;
     out.shape[0] = out.padded_shape[0] = rows;
+    const std::uint64_t row_bytes = groups * (parent.qtype == QType::PTQ1_G128_FP16 ? 28u : 32u);
     out.qdata = static_cast<const std::uint8_t*>(parent.qdata) +
-                static_cast<std::uint64_t>(first_row) * groups * 32u;
-    out.scales = static_cast<const std::uint8_t*>(parent.scales) +
-                 static_cast<std::uint64_t>(first_row) * groups * 2u;
+                static_cast<std::uint64_t>(first_row) * row_bytes;
+    if (parent.scales != nullptr) {
+        out.scales = static_cast<const std::uint8_t*>(parent.scales) +
+                     static_cast<std::uint64_t>(first_row) * groups * 2u;
+    } else {
+        out.scales = nullptr;
+    }
     return out;
 }
 
@@ -40,13 +45,15 @@ void q2_attn_input_proj(const Tensor& x, const Weight& weight, Tensor& q, Tensor
     constexpr std::int32_t kQRows  = 6144;
     constexpr std::int32_t kKvRows = 1024;
     constexpr std::int32_t kRows   = 14336;
-    if (weight.qtype != QType::Q2_G128_FP16 || weight.layout != QuantLayout::RowSplit ||
-        weight.scale_dtype != DType::FP16 || weight.group_size != 128 || weight.group != 128 ||
+    const bool q2 = weight.qtype == QType::Q2_G128_FP16;
+    const bool ptq1 = weight.qtype == QType::PTQ1_G128_FP16;
+    if ((!q2 && !ptq1) || weight.layout != QuantLayout::RowSplit ||
+        (q2 && weight.scale_dtype != DType::FP16) || weight.group_size != 128 || weight.group != 128 ||
         weight.n != kRows || weight.k != kHidden || weight.shape[0] != kRows ||
         weight.shape[1] != kHidden || weight.padded_shape[0] != kRows ||
-        weight.padded_shape[1] != kHidden || weight.qdata == nullptr ||
-        weight.scales == nullptr || weight.qhigh != nullptr) {
-        throw std::invalid_argument("q2 attn_input_proj: invalid parent weight");
+        weight.padded_shape[1] != kHidden || weight.qdata == nullptr || weight.qhigh != nullptr ||
+        (q2 && weight.scales == nullptr) || (ptq1 && weight.scales != nullptr)) {
+        throw std::invalid_argument("ternary attn_input_proj: invalid parent weight");
     }
     const std::int32_t cols = x.ne[1];
     if (cols <= 0 || q.ne[0] != kQRows || gate.ne[0] != kQRows || k.ne[0] != kKvRows ||

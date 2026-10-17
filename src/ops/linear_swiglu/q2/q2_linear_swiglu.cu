@@ -47,9 +47,12 @@ std::size_t q2_linear_swiglu_workspace_bytes(std::int32_t gate_up_rows,
 
 void q2_linear_swiglu(const Tensor& x, const Weight& weight, Tensor& out, WorkspaceArena& ws,
                       cudaStream_t stream) {
-    if (weight.qtype != QType::Q2_G128_FP16 || weight.layout != QuantLayout::RowSplit ||
-        weight.group_size != 128 || weight.n % 2 != 0) {
-        throw std::invalid_argument("q2 linear_swiglu: weight must be q2_g128_fp16 row-split");
+    if ((weight.qtype != QType::Q2_G128_FP16 && weight.qtype != QType::PTQ1_G128_FP16) ||
+        weight.layout != QuantLayout::RowSplit || weight.group_size != 128 ||
+        weight.group != 128 || weight.n % 2 != 0 || weight.qdata == nullptr ||
+        weight.qhigh != nullptr || (weight.qtype == QType::Q2_G128_FP16 && weight.scales == nullptr) ||
+        (weight.qtype == QType::PTQ1_G128_FP16 && weight.scales != nullptr)) {
+        throw std::invalid_argument("ternary linear_swiglu: weight must be q2 or ptq1 row-split");
     }
     const int rows = weight.n / 2;
     const int t = x.ne[1];

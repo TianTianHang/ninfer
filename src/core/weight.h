@@ -21,6 +21,7 @@ enum class QType : std::uint16_t {
     // PQ2_0 codebook, so an existing PQ2_0 payload is imported without rewriting
     // a single code or scale.
     Q2_G128_FP16        = 9,
+    PTQ1_G128_FP16      = 10,
 };
 
 enum class QuantLayout : std::uint16_t {

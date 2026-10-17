@@ -2,6 +2,7 @@
 
 #include "core/weight.h"
 #include "ninfer/ops/linear.h"
+#include "ops/linear/ptq1/ptq1_linear.h"
 
 #include <cstdint>
 

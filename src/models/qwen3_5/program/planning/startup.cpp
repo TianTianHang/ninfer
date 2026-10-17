@@ -836,7 +836,8 @@ std::unique_ptr<SequencePlanImpl> build_sequence_candidate(const SequencePlannin
     // Q2 folded models currently use a workspace-backed FWHT prepass. CUDA graph
     // capture/replay of that route is not yet qualified; disable it explicitly so
     // the default product path remains correct and does not crash during replay.
-    if (impl->parameters->text.token_embedding.qtype == QType::Q2_G128_FP16) {
+    if (impl->parameters->text.token_embedding.qtype == QType::Q2_G128_FP16 ||
+        impl->parameters->text.token_embedding.qtype == QType::PTQ1_G128_FP16) {
         impl->use_cuda_graph = false;
     }
     impl->causal_scoring       = inputs.causal_scoring;

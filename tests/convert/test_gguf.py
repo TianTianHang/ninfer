@@ -49,6 +49,23 @@ def test_pq2_0_codes_and_scales_are_imported_verbatim(tmp_path):
         assert logical.values(0, 4).tolist() == [-1.0, 0.0, 1.0, 2.0]
 
 
+def test_ptq1_0_trits_are_decoded_to_q2_codes(tmp_path):
+    # PTQ1's 24 base-3 bytes cover 120 lanes, followed by two bytes for 8 lanes.
+    # Zero bytes decode to -1; 0xff decodes to +1 under the reference codec.
+    block = bytes(16) + bytes([0xFF]) * 8 + bytes(2) + struct.pack("<e", 2.0)
+    path = tmp_path / "ptq1.gguf"
+    _gguf(path, [("proj.weight", (128, 1), 143)], [block])
+    with GgufSource(path) as source:
+        encoded = source.read_encoded("proj.weight", 0, 1)
+        assert encoded.format == "ptq1_g128_fp16"
+        assert encoded.codes.shape == (1, 1, 128)
+        assert encoded.codes[0, 0, :80].tolist() == [0] * 80
+        assert encoded.codes[0, 0, 80:120].tolist() == [2] * 40
+        assert encoded.codes[0, 0, 120:].tolist() == [0] * 8
+        assert encoded.scales.tolist() == [[2.0]]
+        assert source.read_flat("proj.weight").tolist() == [-2.0] * 80 + [2.0] * 40 + [-2.0] * 8
+
+
 def test_declared_bf16_payload_can_be_read_as_fp16_bits(tmp_path):
     values = struct.pack("<HH", 0x3E00, 0xB800)  # FP16 1.5, -0.5
     path = tmp_path / "half.gguf"

@@ -243,9 +243,10 @@ def fp8_row_maxabs(request: PrepareRequest) -> PreparedMethod:
 
 
 def import_encoded(request: PrepareRequest) -> PreparedMethod:
-    """Preserve source FP8, NVFP4, or custom PQ2_0 codes and scales."""
+    """Preserve source FP8, NVFP4, PQ2_0, or PTQ1_0 codes and scales."""
     if (
-        request.target.format not in ("nvfp4", "fp8_e4m3fn_row_bf16", "q2_g128_fp16")
+        request.target.format
+        not in ("nvfp4", "fp8_e4m3fn_row_bf16", "q2_g128_fp16", "ptq1_g128_fp16")
         or len(request.target.shape) != 2
     ):
         raise ValueError("import_encoded requires a known encoded matrix target")

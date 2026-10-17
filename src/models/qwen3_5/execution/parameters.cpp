@@ -26,7 +26,8 @@ public:
         : model_(model), signs_(signs) {}
 
     void hadamard(Weight& weight, std::string_view name, bool inverse = false) const {
-        if (weight.qtype != QType::Q2_G128_FP16 || signs_ == nullptr || !signs_->has_value() ||
+        if ((weight.qtype != QType::Q2_G128_FP16 && weight.qtype != QType::PTQ1_G128_FP16) ||
+            signs_ == nullptr || !signs_->has_value() ||
             !model_.config().text.hadamard) {
             return;
         }

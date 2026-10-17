@@ -19,7 +19,8 @@ std::size_t gdn_projection_workspace_bytes(const GdnParameters& parameters, std:
                                                             first, last);
     }
     if (const auto* pair = std::get_if<ops::PairedProjectionWeights>(&parameters.projection)) {
-        if (pair->first.qtype == QType::Q2_G128_FP16) {
+        if (pair->first.qtype == QType::Q2_G128_FP16 ||
+            pair->first.qtype == QType::PTQ1_G128_FP16) {
             return static_cast<std::size_t>(pair->first.k) * last * 2u;
         }
     }
@@ -36,10 +37,12 @@ std::size_t gdn_snapshot_workspace_bytes(const GdnParameters& parameters, const 
         const auto& w = single->weight;
         bytes = ops::gdn_input_proj_conv_snapshot_workspace_capacity_bytes(
             w.qtype, w.n, w.k, single->policy, batch, first_width, last_width);
-    } else if (pair && pair->first.qtype == QType::Q2_G128_FP16 &&
-               pair->second.qtype == QType::Q2_G128_FP16) {
+    } else if (pair &&
+               (pair->first.qtype == QType::Q2_G128_FP16 ||
+                pair->first.qtype == QType::PTQ1_G128_FP16) &&
+               pair->second.qtype == pair->first.qtype) {
         bytes = ops::gdn_input_proj_conv_snapshot_workspace_capacity_bytes(
-            QType::Q2_G128_FP16, 16384, 5120, ops::LinearPolicy::A16Only, batch, first_width,
+            pair->first.qtype, 16384, 5120, ops::LinearPolicy::A16Only, batch, first_width,
             last_width);
     } else {
         bytes = ops::gdn_input_proj_conv_snapshot_workspace_capacity_bytes(
@@ -55,8 +58,10 @@ std::size_t gdn_record_workspace_bytes(const GdnParameters& parameters, const Gd
                                        std::int32_t batch, std::int32_t first_width,
                                        std::int32_t last_width) {
     const auto* pair = std::get_if<ops::PairedProjectionWeights>(&parameters.projection);
-    if (pair && pair->first.qtype == QType::Q2_G128_FP16 &&
-        pair->second.qtype == QType::Q2_G128_FP16) {
+    if (pair &&
+        (pair->first.qtype == QType::Q2_G128_FP16 ||
+         pair->first.qtype == QType::PTQ1_G128_FP16) &&
+        pair->second.qtype == pair->first.qtype) {
         return static_cast<std::size_t>(pair->first.k) * last_width * 2u;
     }
     const auto* single = std::get_if<LinearParameters>(&parameters.projection);
@@ -77,7 +82,8 @@ std::size_t gdn_record_workspace_bytes(const GdnParameters& parameters, const Gd
 void gdn_projection(const Tensor& hidden, const GdnParameters& parameters, Tensor& qkv, Tensor& z,
                     WorkspaceArena& workspace, cudaStream_t stream) {
     if (const auto* pair = std::get_if<ops::PairedProjectionWeights>(&parameters.projection)) {
-        if (pair->first.qtype == QType::Q2_G128_FP16) {
+        if (pair->first.qtype == QType::Q2_G128_FP16 ||
+            pair->first.qtype == QType::PTQ1_G128_FP16) {
             ops::q2_gdn_input_proj(hidden, pair->first, pair->second, qkv, z, workspace, stream);
         } else {
             ops::gdn_input_proj(hidden, pair->first, pair->second, qkv, z, stream);

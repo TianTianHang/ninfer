@@ -1,14 +1,14 @@
 """GGUF checkpoint access for the converter: metadata, tensors, and exact code import.
 
-Only the encodings the Ternary-Bonsai checkpoint uses are decoded. `read_encoded`
-exposes the stored PQ2_0 codes and fp16 group scales unchanged, so a ternary target
-imports the checkpoint without rewriting a code or a scale (see
-`q2_g128_fp16` in `tools.artifact.formats`).
+Only the encodings the Ternary-Bonsai checkpoints use are decoded. ``read_encoded``
+returns exact grouped codes and FP16 scales for either the existing PQ2 artifact
+format or the native PTQ1 block format.
 
-Type ids follow ggml (`ggml.h`):
+Type ids follow ggml (``ggml.h``):
     0   F32     32-bit float
-    30  BF16    bfloat16                     (declared; see `half` below)
+    30  BF16    bfloat16                     (declared; see ``half`` below)
     142 PQ2_0   ternaries, group 128, 2-bit slots, one fp16 scale per group
+    143 PTQ1_0  ternaries, group 128, base-3 packed, one fp16 scale per group
 """
 
 from __future__ import annotations
@@ -31,11 +31,15 @@ _TYPES = {
     1: ("f16", torch.float16, 1, 2),
     30: ("bf16", None, 1, 2),
     142: ("pq2_0", None, 128, 34),
+    143: ("ptq1_0", None, 128, 28),
 }
 HALF_TYPE = 30
 PQ2_0_TYPE = 142
+PTQ1_0_TYPE = 143
 PQ2_0_GROUP = 128
 PQ2_0_BLOCK_BYTES = 34
+PTQ1_0_GROUP = 128
+PTQ1_0_BLOCK_BYTES = 28
 PQ2_0_ZERO_CODE = 1
 
 _SCALAR = {
@@ -43,13 +47,41 @@ _SCALAR = {
     5: "<i", 6: "<f", 7: "<?", 10: "<Q", 11: "<q", 12: "<d",
 }
 
+def _decode_ptq1_codes(blocks: torch.Tensor) -> torch.Tensor:
+    """Decode Prism PTQ1 blocks to q2's unsigned ternary grid codes.
+
+    PTQ1 stores five base-3 trits per byte for the first 120 lanes and four
+    trits per byte for the final eight lanes.  The byte arithmetic mirrors the
+    ggml reference codec: each selected power is reduced modulo 256 before the
+    high trit is extracted.
+    """
+    codes = torch.empty(
+        (*blocks.shape[:-1], PTQ1_0_GROUP), dtype=torch.int8, device=blocks.device
+    )
+    qs = blocks[..., :24].to(torch.int32)
+    qh = blocks[..., 24:26].to(torch.int32)
+    powers5 = (1, 3, 9, 27, 81)
+    powers4 = (1, 3, 9, 27)
+    for n, power in enumerate(powers5):
+        first = ((((qs[..., :16] * power) & 0xFF) * 3) >> 8) - 1
+        second = ((((qs[..., 16:] * power) & 0xFF) * 3) >> 8) - 1
+        codes[..., n * 16 : (n + 1) * 16] = (first + 1).to(torch.int8)
+        codes[..., 80 + n * 8 : 80 + (n + 1) * 8] = (second + 1).to(torch.int8)
+    for n, power in enumerate(powers4):
+        trits = ((((qh * power) & 0xFF) * 3) >> 8) - 1
+        codes[..., 120 + n * 2 : 122 + n * 2] = (trits + 1).to(torch.int8)
+    return codes
+
+
+def _ptq1_scales(blocks: torch.Tensor) -> torch.Tensor:
+    return blocks[..., 26:28].contiguous().view(torch.float16)
 HalfKind = Literal["bf16", "f16"]
 
 
 @dataclass(frozen=True, slots=True)
 class GgufTensor:
     name: str
-    dims: tuple[int, ...]  # ggml order: dims[0] is contiguous, as in ggml ne[]
+    dims: tuple[int, ...]  # gguf order: dims[0] is contiguous, as in ggml ne[]
     ggml_type: int
     offset: int
 
@@ -59,7 +91,7 @@ class GgufTensor:
 
     @property
     def shape(self) -> tuple[int, ...]:
-        """Row-major shape: ggml dims reversed, matching NInfer's [out, in]."""
+        """Row-major shape: GGUF dims reversed, matching NInfer's [out, in]."""
         return tuple(reversed(self.dims))
 
     @property
@@ -78,6 +110,7 @@ class GgufTensor:
     @property
     def bytes(self) -> int:
         return self.blocks * _TYPES[self.ggml_type][3]
+
 
 
 class GgufSource:
@@ -252,6 +285,15 @@ class GgufSource:
                 ).to(torch.int8)
             values = (codes.to(torch.float32) - PQ2_0_ZERO_CODE) * scales.unsqueeze(-1)
             return values.reshape(last - first, info.dims[0])
+        if kind == PTQ1_0_TYPE:
+            groups = info.dims[0] // PTQ1_0_GROUP
+            blocks = torch.frombuffer(bytearray(raw), dtype=torch.uint8).reshape(
+                last - first, groups, PTQ1_0_BLOCK_BYTES
+            )
+            scales = _ptq1_scales(blocks)
+            codes = _decode_ptq1_codes(blocks)
+            values = (codes.to(torch.float32) - PQ2_0_ZERO_CODE) * scales.unsqueeze(-1)
+            return values.reshape(last - first, info.dims[0])
         raise ValueError(f"{info.name}: no row reader for {info.type_name}")
 
     def read_flat(self, name: str, begin: int = 0, end: int | None = None) -> torch.Tensor:
@@ -293,32 +335,40 @@ class GgufSource:
         raise ValueError(f"{info.name}: no vector reader for {info.type_name}")
 
     def read_encoded(self, name: str, first: int, last: int) -> EncodedRows:
-        """Return stored PQ2_0 codes and fp16 group scales for rows ``[first,last)``.
+        """Return ternary codes and FP16 scales in q2_g128_fp16 form.
 
-        Codes keep the checkpoint's unsigned grid index, which is exactly the
-        ``q2_g128_fp16`` code, so nothing is requantized.
+        PQ2_0 codes are copied verbatim. PTQ1_0 trits are decoded and shifted
+        to the q2 unsigned grid, where code 0/1/2 represents -1/0/+1.
         """
         info = self.describe(name)
-        if info.ggml_type != PQ2_0_TYPE:
+        if info.ggml_type not in (PQ2_0_TYPE, PTQ1_0_TYPE):
             raise ValueError(
                 f"{name}: {info.type_name} has no importable ternary codes"
             )
-        if len(info.dims) != 2 or info.dims[0] % PQ2_0_GROUP:
-            raise ValueError(f"{name}: PQ2_0 rows must be a multiple of {PQ2_0_GROUP}")
+        group = PQ2_0_GROUP if info.ggml_type == PQ2_0_TYPE else PTQ1_0_GROUP
+        block_bytes = (
+            PQ2_0_BLOCK_BYTES if info.ggml_type == PQ2_0_TYPE else PTQ1_0_BLOCK_BYTES
+        )
+        if len(info.dims) != 2 or info.dims[0] % group:
+            raise ValueError(f"{name}: {info.type_name} rows must be a multiple of {group}")
         raw = self._read_rows(info, first, last)
-        groups = info.dims[0] // PQ2_0_GROUP
+        groups = info.dims[0] // group
         blocks = torch.frombuffer(bytearray(raw), dtype=torch.uint8).reshape(
-            last - first, groups, PQ2_0_BLOCK_BYTES
+            last - first, groups, block_bytes
         )
-        scales = (
-            blocks[:, :, :2].contiguous().view(torch.float16).reshape(last - first, groups)
-        )
-        words = blocks[:, :, 2:].to(torch.int32)
-        codes = torch.empty((last - first, groups, PQ2_0_GROUP), dtype=torch.int8)
-        for slot in range(4):
-            codes[:, :, slot::4] = ((words >> (2 * slot)) & 0x03).to(torch.int8)
+        if info.ggml_type == PQ2_0_TYPE:
+            scales = (
+                blocks[:, :, :2].contiguous().view(torch.float16).reshape(last - first, groups)
+            )
+            words = blocks[:, :, 2:].to(torch.int32)
+            codes = torch.empty((last - first, groups, PQ2_0_GROUP), dtype=torch.int8)
+            for slot in range(4):
+                codes[:, :, slot::4] = ((words >> (2 * slot)) & 0x03).to(torch.int8)
+        else:
+            scales = _ptq1_scales(blocks).reshape(last - first, groups)
+            codes = _decode_ptq1_codes(blocks)
         return EncodedRows(
-            "q2_g128_fp16",
+            "q2_g128_fp16" if info.ggml_type == PQ2_0_TYPE else "ptq1_g128_fp16",
             codes,
             scales,
         )
@@ -351,7 +401,7 @@ def tensor_source(
         return store.read_encoded(name, first, first + end - begin)
 
     info = store.describe(name)
-    encoded_reader = encoded if info.ggml_type == PQ2_0_TYPE else None
+    encoded_reader = encoded if info.ggml_type in (PQ2_0_TYPE, PTQ1_0_TYPE) else None
     return LogicalSource(
         shape, f"{store.path}:{name}[{offset}:{offset+prod(shape)}]", read,
         encoded_reader,

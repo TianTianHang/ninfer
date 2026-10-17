@@ -54,7 +54,33 @@ Full-attention query and gate rows are interleaved in the source projection. The
 be selected into their logical destination ranges before packing. This is a logical
 mapping operation, not a physical artifact reorder.
 
-## Hadamard folding
+## PTQ1_0 and native ptq1_g128_fp16
+
+GGUF type 143 is PrismML's `PTQ1_0`, not the upstream `TQ1_0` block size. Each
+128-value block is 28 bytes:
+
+1. `qs[24]`: five base-3 digits per byte for values 0 through 119;
+2. `qh[2]`: four base-3 digits per byte for values 120 through 127;
+3. `d`: one FP16 scale at byte offset 26.
+
+For a stored byte `b`, digit `n` is decoded by repeatedly applying
+`b = (b * 3) & 0xff` and extracting `(b * 3) >> 8 - 1`. The decoded coefficient
+is in `{-1, 0, +1}` and the value is `coefficient * d`. This is the exact decoder
+used by the local llama.cpp Prism branch. It is not an ordinary absmax
+requantization and must not be converted through a floating-point approximation.
+
+NInfer stores PTQ1 as `ptq1_g128_fp16` in the same RowSplit object contract, but
+keeps the 28-byte blocks intact. The C++ linear, embedding, Attention input,
+GDN input, residual linear-add, and SwiGLU routes decode the blocks directly.
+Hadamard activation preparation is shared with the existing ternary path; only
+the weight decoder differs. The converter's `import_encoded` method preserves
+FP16 scales and re-encodes the base-3 digits using the llama.cpp ceiling rule.
+
+The independent oracle for PTQ1 must check all 128 lane positions, including the
+16-byte, 8-byte, and 2-byte staging regions, exact FP16 scale bits, and direct
+operator results against the llama.cpp reference decoder. A successful artifact
+load or plausible generation result is not sufficient.
+
 
 Prism folding uses normalized, self-inverse Sylvester-Walsh Hadamard transforms with
 runtime block size 1024 and explicit sign vectors of widths 5120, 6144, and 17408.

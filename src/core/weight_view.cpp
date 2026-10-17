@@ -114,6 +114,23 @@ WeightGeometry weight_geometry(QType format, QuantLayout layout,
     const auto k       = shape[1];
     out.padded_columns = k;
     if (layout == QuantLayout::RowSplit) {
+        if (format == QType::PTQ1_G128_FP16) {
+            if (k % 128) {
+                throw std::invalid_argument("PTQ1 row-split requires K divisible by 128");
+            }
+            out.group_size          = 128;
+            const auto groups       = k / out.group_size;
+            out.code_bytes_per_row  = mul(groups, 28);
+            out.high_bytes_per_row  = 0;
+            out.scale_bytes_per_row = 0;
+            out.code_bytes          = mul(n, out.code_bytes_per_row);
+            out.high_offset         = out.code_bytes;
+            out.high_bytes          = 0;
+            out.scale_offset        = out.code_bytes;
+            out.scale_bytes         = 0;
+            out.bytes               = out.code_bytes;
+            return out;
+        }
         std::uint64_t high_per_group = 0;
         switch (format) {
         case QType::Q2_G128_FP16:
@@ -213,6 +230,9 @@ std::uint64_t weight_scale_offset(const WeightGeometry& geometry, std::uint64_t 
     if (geometry.shape.size() != 2 || !geometry.group_size || row >= geometry.shape[0] ||
         group >= geometry.padded_columns / geometry.group_size) {
         throw std::invalid_argument("weight scale coordinate exceeds its parent");
+    }
+    if (geometry.format == QType::PTQ1_G128_FP16) {
+        return geometry.code_bytes_per_row * row + group * 28 + 26;
     }
     if (geometry.layout == QuantLayout::BlockScaleK16M128x4) {
         const auto inner = row % 128;

@@ -293,7 +293,7 @@ void dispatch_single_parent(const Tensor& x, const Weight& weight, Tensor& qkv, 
                             LinearPolicy policy, WorkspaceArena* workspace, cudaStream_t stream) {
     validate_policy(policy);
     const std::int32_t cols = x.ne[1];
-    if (weight.qtype == QType::Q2_G128_FP16) {
+    if (weight.qtype == QType::Q2_G128_FP16 || weight.qtype == QType::PTQ1_G128_FP16) {
         constexpr std::int32_t kHidden = 5120;
         constexpr std::int32_t kQkvRows = 10240;
         constexpr std::int32_t kZRows = 6144;
@@ -434,7 +434,7 @@ void dispatch_single_parent_snapshot(const Tensor& x, const Weight& weight,
                                      WorkspaceArena& workspace, cudaStream_t stream) {
     validate_policy(policy);
 
-    if (weight.qtype == QType::Q2_G128_FP16) {
+    if (weight.qtype == QType::Q2_G128_FP16 || weight.qtype == QType::PTQ1_G128_FP16) {
         constexpr std::int32_t kHidden = 5120;
         constexpr std::int32_t kQueryRows = 2048;
         constexpr std::int32_t kKeyRows = 2048;
@@ -621,7 +621,7 @@ void dispatch_single_parent_record(const Tensor& x, const Weight& weight, const 
                                    cudaStream_t stream) {
     validate_policy(policy);
 
-    if (weight.qtype == QType::Q2_G128_FP16) {
+    if (weight.qtype == QType::Q2_G128_FP16 || weight.qtype == QType::PTQ1_G128_FP16) {
         constexpr std::int32_t kHidden = 5120;
         constexpr std::int32_t kQueryRows = 2048;
         constexpr std::int32_t kKeyRows = 2048;
@@ -843,7 +843,7 @@ std::size_t gdn_input_proj_workspace_capacity_bytes(QType parent_qtype, std::int
         }
         return detail::fp8_gdn_input_workspace_capacity_bytes(policy, min_tokens, max_tokens);
     }
-    if (parent_qtype == QType::Q2_G128_FP16) {
+    if (parent_qtype == QType::Q2_G128_FP16 || parent_qtype == QType::PTQ1_G128_FP16) {
         if (parent_rows != 16384 || input_rows != 5120) {
             throw std::invalid_argument("gdn_input_proj workspace: unsupported Q2 profile");
         }
@@ -922,7 +922,8 @@ std::size_t gdn_input_proj_conv_snapshot_workspace_capacity_bytes(
         return detail::fp8_gdn_snapshot_workspace_capacity_bytes(policy, batch_size, min_width,
                                                                  max_width);
     }
-    if (parent_qtype == QType::Q2_G128_FP16 && parent_rows == 16384 && input_rows == 5120) {
+    if ((parent_qtype == QType::Q2_G128_FP16 || parent_qtype == QType::PTQ1_G128_FP16) &&
+        parent_rows == 16384 && input_rows == 5120) {
         // The ternary projection itself needs no scratch; only the convolution
         // materializes a projected tile, exactly as the Q4/Q5 route does.
         constexpr std::int32_t kChannels = 10240;
@@ -1020,7 +1021,7 @@ bool ternary_conv_snapshot(const Tensor& x, const Weight& qk_weight,
                            Tensor& query, Tensor& key, Tensor& value, Tensor& z,
                            std::int32_t channels, const ConvGeometry& geometry, WorkspaceArena& ws,
                            cudaStream_t stream) {
-    if (qk_weight.qtype != QType::Q2_G128_FP16) { return false; }
+    if (qk_weight.qtype != QType::Q2_G128_FP16 && qk_weight.qtype != QType::PTQ1_G128_FP16) { return false; }
     auto scope = ws.scope();
     ProjectedWorkspace scratch = allocate_projected_workspace(ws, channels, geometry.width);
     q2_gdn_input_proj(x, qk_weight, value_z_weight, scratch.projected, z, ws, stream);
@@ -1036,7 +1037,7 @@ bool ternary_conv_record(const Tensor& x, const Weight& qk_weight, const Weight&
                          Tensor& conv_record, Tensor& query, Tensor& key, Tensor& value, Tensor& z,
                          const ConvGeometry& geometry, WorkspaceArena& workspace,
                          cudaStream_t stream) {
-    if (qk_weight.qtype != QType::Q2_G128_FP16) { return false; }
+    if (qk_weight.qtype != QType::Q2_G128_FP16 && qk_weight.qtype != QType::PTQ1_G128_FP16) { return false; }
     compose_record(x, conv_weight, conv_states, valid_columns, initial_state_slots, conv_record,
                    query, key, value, z, geometry, workspace, stream,
                    [&](const Tensor& x_flat, Tensor& record_flat, Tensor& z_flat) {

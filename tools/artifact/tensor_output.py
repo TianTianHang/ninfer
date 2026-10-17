@@ -11,11 +11,13 @@ import torch
 from .codecs.direct import encode_direct
 from .codecs.fp8_row import encode_fp8_row_scaled
 from .codecs.nvfp4 import encode_nvfp4
+from .codecs.ptq1 import encode_ptq1
 from .codecs.row_split import encode_row_split, split_row_planes
 from .formats import (
     DirectFormat,
     Fp8RowFormat,
     Nvfp4Format,
+    PackedTernaryFormat,
     QuantFormat,
     get_format,
 )
@@ -88,7 +90,11 @@ class TensorOutput:
         if rows <= 0 or row_begin + rows > obj.shape[0]:
             raise ValueError(f"{obj.id}: encoded rows exceed parent")
         self._padding()
-        if isinstance(self.format, QuantFormat):
+        if isinstance(self.format, PackedTernaryFormat):
+            g = row_split_geometry(self.format, obj.shape)
+            block = encode_ptq1(codes, scales, (rows, k))
+            self.write_bytes(row_begin * g.base_row_bytes, block)
+        elif isinstance(self.format, QuantFormat):
             g = row_split_geometry(self.format, obj.shape)
             block = encode_row_split(codes, scales, self.format, (rows, k))
             planes = split_row_planes(block, row_split_geometry(self.format, (rows, k)))

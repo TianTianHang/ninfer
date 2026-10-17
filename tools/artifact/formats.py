@@ -48,6 +48,15 @@ class QuantFormat:
 
 
 @dataclass(frozen=True, slots=True)
+class PackedTernaryFormat:
+    """Prism PTQ1 base-3 ternary blocks with one FP16 scale per 128 lanes."""
+
+    name: str
+    group_size: int
+    block_bytes: int
+
+
+@dataclass(frozen=True, slots=True)
 class Nvfp4Format:
     """E2M1 weights with one E4M3FN scale word per K-axis group."""
 
@@ -62,7 +71,7 @@ class Fp8RowFormat:
     name: str
 
 
-NumericFormat: TypeAlias = DirectFormat | QuantFormat | Nvfp4Format | Fp8RowFormat
+NumericFormat: TypeAlias = DirectFormat | QuantFormat | PackedTernaryFormat | Nvfp4Format | Fp8RowFormat
 
 
 BF16 = DirectFormat("bf16", 2)
@@ -77,6 +86,7 @@ Q8_G32_FP16 = QuantFormat("q8_g32_fp16", 8, 32, -127, 127)
 # i.e. the coefficients {-1, 0, +1, +2}. This is exactly the ggml PQ2_0 codebook, so
 # an existing PQ2_0 payload can be imported without touching codes or scales.
 Q2_G128_FP16 = QuantFormat("q2_g128_fp16", 2, 128, -1, 2, zero_value_code=1)
+PTQ1_G128_FP16 = PackedTernaryFormat("ptq1_g128_fp16", 128, 28)
 NVFP4 = Nvfp4Format("nvfp4", 16)
 FP8_E4M3FN_ROW_BF16 = Fp8RowFormat("fp8_e4m3fn_row_bf16")
 
@@ -88,10 +98,11 @@ QUANT_FORMATS = MappingProxyType(
         for item in (Q2_G128_FP16, Q4_G64_FP16, Q5_G64_FP16, Q6_G64_FP16, Q8_G32_FP16)
     }
 )
+PACKED_TERNARY_FORMATS = MappingProxyType({PTQ1_G128_FP16.name: PTQ1_G128_FP16})
 NVFP4_FORMATS = MappingProxyType({NVFP4.name: NVFP4})
 FP8_ROW_FORMATS = MappingProxyType({FP8_E4M3FN_ROW_BF16.name: FP8_E4M3FN_ROW_BF16})
 NUMERIC_FORMATS = MappingProxyType(
-    {**DIRECT_FORMATS, **QUANT_FORMATS, **NVFP4_FORMATS, **FP8_ROW_FORMATS}
+    {**DIRECT_FORMATS, **QUANT_FORMATS, **PACKED_TERNARY_FORMATS, **NVFP4_FORMATS, **FP8_ROW_FORMATS}
 )
 
 
@@ -168,6 +179,7 @@ __all__ = [
     "FP32",
     "INT32",
     "Q2_G128_FP16",
+    "PTQ1_G128_FP16",
     "Q4_G64_FP16",
     "Q5_G64_FP16",
     "Q6_G64_FP16",
@@ -176,11 +188,13 @@ __all__ = [
     "FP8_E4M3FN_ROW_BF16",
     "DIRECT_FORMATS",
     "QUANT_FORMATS",
+    "PACKED_TERNARY_FORMATS",
     "NVFP4_FORMATS",
     "FP8_ROW_FORMATS",
     "NUMERIC_FORMATS",
     "DirectFormat",
     "QuantFormat",
+    "PackedTernaryFormat",
     "Nvfp4Format",
     "Fp8RowFormat",
     "NumericFormat",

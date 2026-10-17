@@ -79,6 +79,7 @@ void dispatch_linear(const Tensor& x, const Weight& w, Tensor& out, LinearPolicy
                      WorkspaceArena* workspace, cudaStream_t stream) {
     switch (w.qtype) {
     case QType::Q2_G128_FP16:
+    case QType::PTQ1_G128_FP16:
         detail::q2_dispatch(x, w, out, policy, workspace, stream);
         return;
     case QType::Q4_G64_FP16:
@@ -121,7 +122,8 @@ std::size_t linear_workspace_capacity_bytes(QType qtype, std::int32_t output_row
 
     switch (qtype) {
     case QType::Q2_G128_FP16:
-        // One BF16 transformed activation tile, reused through the q2 contraction.
+    case QType::PTQ1_G128_FP16:
+        // One BF16 transformed activation tile, reused through the ternary contraction.
         return static_cast<std::size_t>(input_rows) * static_cast<std::size_t>(max_tokens) *
                2u;
     case QType::Q4_G64_FP16:

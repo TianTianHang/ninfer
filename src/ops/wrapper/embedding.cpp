@@ -200,6 +200,29 @@ void require_q2_metadata(const Weight& table, const Tensor& out) {
     }
 }
 
+void require_ptq1_metadata(const Weight& table, const Tensor& out) {
+    require_weight_2d(table);
+    if (table.layout != QuantLayout::RowSplit || table.group_size != 128 || table.group != 128 ||
+        table.shape[1] != out.ne[0] || table.shape[1] % 1024 != 0 ||
+        table.padded_shape[0] != table.shape[0] || table.padded_shape[1] != table.shape[1]) {
+        throw std::invalid_argument("embedding: invalid PTQ1 shape or layout metadata");
+    }
+    if (table.qdata == nullptr || table.scales != nullptr || table.qhigh != nullptr ||
+        table.high_plane_bytes != 0) {
+        throw std::invalid_argument("embedding: invalid PTQ1 planes");
+    }
+    const std::uint64_t groups = static_cast<std::uint64_t>(table.shape[1] / 128);
+    const std::uint64_t expected = checked_mul_u64(
+        checked_mul_u64(static_cast<std::uint64_t>(table.shape[0]), groups), 28);
+    if (table.payload_bytes != 0 && table.payload_bytes < expected) {
+        throw std::invalid_argument("embedding: PTQ1 payload is too small");
+    }
+    if (table.inverse_hadamard &&
+        (table.hadamard_signs == nullptr || table.hadamard_block_size != 1024)) {
+        throw std::invalid_argument("embedding: inverse PTQ1 table is missing Hadamard signs");
+    }
+}
+
 void require_fp8_metadata(const Weight& table, const Tensor& out) {
     constexpr std::int32_t kVocabulary = 248320;
     constexpr std::int32_t kHidden     = 5120;
@@ -269,6 +292,12 @@ void embedding(const Tensor& ids, const Weight& table, Tensor& out, cudaStream_t
         if (is_empty_T(ids, out)) { return; }
         require_non_empty_tensors(ids, out);
         detail::embed_gather_q2_launch(ids, table, out, stream);
+        break;
+    case QType::PTQ1_G128_FP16:
+        require_ptq1_metadata(table, out);
+        if (is_empty_T(ids, out)) { return; }
+        require_non_empty_tensors(ids, out);
+        detail::embed_gather_ptq1_launch(ids, table, out, stream);
         break;
     default:
         throw std::invalid_argument("embedding: unsupported table qtype");

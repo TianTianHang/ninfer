@@ -7,9 +7,11 @@ import torch
 
 from tools.artifact.layouts import (
     block_scale_geometry,
+    row_split_geometry,
 )
 from tools.artifact.codecs.direct import decode_direct, encode_direct
 from tools.artifact.codecs.nvfp4 import decode_nvfp4_words, encode_nvfp4
+from tools.artifact.codecs.ptq1 import encode_ptq1
 from tools.artifact.codecs.row_split import decode_row_split_codes, encode_row_split
 
 
@@ -157,6 +159,18 @@ def test_row_split_matches_known_packed_bytes(
     )
     assert torch.equal(decoded_scales, scales)
     assert torch.equal(decoded_codes, codes)
+
+
+def test_ptq1_known_block_matches_llama_cpp_wire_format():
+    codes = torch.ones((1, 1, 128), dtype=torch.int8)
+    codes[0, 0, :80] = 0
+    codes[0, 0, 80:120] = 2
+    codes[0, 0, 120:] = 0
+    scales = torch.tensor([[2.0]], dtype=torch.float16)
+    geometry = row_split_geometry("ptq1_g128_fp16", (1, 128))
+    payload = encode_ptq1(codes, scales, (1, 128))
+    assert geometry.payload_bytes == 28
+    assert payload == bytes(16) + bytes([0xFF]) * 8 + bytes(2) + struct.pack("<e", 2.0)
 
 
 def test_nvfp4_known_vector_geometry_swizzle_tail_and_round_trip():

@@ -19,6 +19,7 @@ from .formats import (
     Fp8RowFormat,
     Nvfp4Format,
     NumericFormat,
+    PackedTernaryFormat,
     QuantFormat,
     get_format,
 )
@@ -82,7 +83,7 @@ ROW_SPLIT_K128_V1 = Layout(
     "row_split_k128_v1",
     256,
     frozenset(
-        ("q2_g128_fp16", "q4_g64_fp16", "q5_g64_fp16", "q6_g64_fp16", "q8_g32_fp16")
+        ("q2_g128_fp16", "ptq1_g128_fp16", "q4_g64_fp16", "q5_g64_fp16", "q6_g64_fp16", "q8_g32_fp16")
     ),
 )
 BLOCK_SCALE_K16_M128X4_V1 = Layout(
@@ -162,10 +163,34 @@ def row_split_geometry(
     format: str | QuantFormat, shape: Sequence[int]
 ) -> RowSplitGeometry:
     spec = _format(format)
-    if not isinstance(spec, QuantFormat):
-        raise ValueError("row_split_k128_v1 requires a grouped quantized format")
     n, k = _shape(shape, rank=2)
     k_pad = align_up(k, K_ALIGNMENT)
+    if isinstance(spec, PackedTernaryFormat):
+        if spec.group_size != 128 or spec.block_bytes != 28 or k_pad != k:
+            raise ValueError("ptq1_g128_fp16 requires K divisible by 128")
+        groups_per_row = k_pad // spec.group_size
+        base_row_bytes = groups_per_row * spec.block_bytes
+        base_bytes = n * base_row_bytes
+        return RowSplitGeometry(
+            n=n,
+            k=k,
+            k_pad=k_pad,
+            groups_per_row=groups_per_row,
+            base_bytes_per_group=spec.block_bytes,
+            high_bytes_per_group=0,
+            base_row_bytes=base_row_bytes,
+            high_row_bytes=0,
+            scale_row_bytes=0,
+            base_offset=0,
+            base_bytes=base_bytes,
+            high_offset=base_bytes,
+            high_bytes=0,
+            scale_offset=base_bytes,
+            scale_bytes=0,
+            payload_bytes=base_bytes,
+        )
+    if not isinstance(spec, QuantFormat):
+        raise ValueError("row_split_k128_v1 requires a grouped quantized format")
     groups_per_row = k_pad // spec.group_size
     if spec.bits < 4:
         # A 2-bit group carries four codes per byte and has no high plane.
@@ -276,7 +301,7 @@ def encoded_size(
             raise ValueError("contiguous_le_v1 supports rank 0 through 16")
         return prod(dims) * numeric_spec.word_bytes
     if layout_spec is ROW_SPLIT_K128_V1:
-        if not isinstance(numeric_spec, QuantFormat):
+        if not isinstance(numeric_spec, (QuantFormat, PackedTernaryFormat)):
             raise ValueError("row_split_k128_v1 requires a grouped quantized format")
         return row_split_geometry(numeric_spec, shape).payload_bytes
     if layout_spec is BLOCK_SCALE_K16_M128X4_V1:

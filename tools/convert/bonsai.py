@@ -1,4 +1,4 @@
-"""Production converter adapter for the Ternary-Bonsai PQ2_0 GGUF."""
+"""Production converter adapter for the Ternary-Bonsai PQ2_0/PTQ1_0 GGUF."""
 
 from __future__ import annotations
 
@@ -26,7 +26,6 @@ from .model import Model, Parameter
 from .sources.gguf import GgufSource, tensor_source
 from .sources.logical import LogicalSource, array_source, select_rows, transpose_source
 
-Q2 = "q2_g128_fp16"
 
 
 def _text_config() -> dict:
@@ -224,8 +223,8 @@ def _packing_groups() -> list[tuple[str, ...]]:
 
 
 def build_model(source: GgufSource, *, resource_overrides=None) -> Model:
-    if source.describe("token_embd.weight").type_name != "pq2_0":
-        raise ValueError("this adapter requires the Bonsai PQ2_0 token embedding")
+    if source.describe("token_embd.weight").type_name not in ("pq2_0", "ptq1_0"):
+        raise ValueError("this adapter requires the Bonsai PQ2_0 or PTQ1_0 token embedding")
     refs, resources, token_count, special_ids = _resources(source, resource_overrides)
     config = _text_config()
     model = Model({"text": {"config": config, "resources": refs["text"]}}, resources=resources,
@@ -258,7 +257,8 @@ def recipe(model, recipe, sources=None):
     from .methods import import_encoded
     for name, parameter in model.parameters.items():
         if parameter.source.read_encoded is not None:
-            recipe.assign(name, format=Q2, method=import_encoded)
+            encoded_format = parameter.source.read_encoded(0, 1).format
+            recipe.assign(name, format=encoded_format, method=import_encoded)
 
 
 __all__ = ["build_model", "recipe"]

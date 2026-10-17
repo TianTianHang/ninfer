@@ -106,7 +106,7 @@ void dispatch_single_parent(const Tensor& x, const Weight& weight, Tensor& q, Te
         return;
     }
 
-    if (weight.qtype == QType::Q2_G128_FP16) {
+    if (weight.qtype == QType::Q2_G128_FP16 || weight.qtype == QType::PTQ1_G128_FP16) {
         constexpr std::int32_t kHidden = 5120;
         constexpr std::int32_t kQRows  = 6144;
         constexpr std::int32_t kKvRows = 1024;
@@ -193,8 +193,9 @@ std::size_t attn_input_proj_workspace_capacity_bytes(QType parent_qtype, std::in
 
     switch (parent_qtype) {
     case QType::Q2_G128_FP16:
+    case QType::PTQ1_G128_FP16:
         if (parent_rows != 14336 || input_rows != 5120) {
-            throw std::invalid_argument("attn_input_proj workspace: unsupported Q2 profile");
+            throw std::invalid_argument("attn_input_proj workspace: unsupported ternary profile");
         }
         return static_cast<std::size_t>(input_rows) * static_cast<std::size_t>(max_tokens) * 2u;
     case QType::BF16:

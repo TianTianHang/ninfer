@@ -107,8 +107,8 @@ std::size_t q2_hadamard_workspace_bytes(int width, int tokens) {
 
 Tensor q2_prepare_activation(const Tensor& input, const Weight& weight,
                              WorkspaceArena& workspace, cudaStream_t stream) {
-    if (weight.qtype != QType::Q2_G128_FP16 || weight.hadamard_signs == nullptr ||
-        weight.hadamard_block_size == 0) {
+    if ((weight.qtype != QType::Q2_G128_FP16 && weight.qtype != QType::PTQ1_G128_FP16) ||
+        weight.hadamard_signs == nullptr || weight.hadamard_block_size == 0) {
         return input;
     }
     Tensor output = workspace.alloc(DType::BF16, {input.ne[0], input.ne[1]});
