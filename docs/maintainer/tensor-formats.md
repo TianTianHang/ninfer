@@ -1,6 +1,6 @@
 # NInfer Persistent Tensor Numeric Formats
 
-This reference defines the ten persistent numeric tensor formats accepted by current `.ninfer`
+This reference defines the eleven persistent numeric tensor formats accepted by current `.ninfer`
 artifacts: their logical words, quantization semantics, canonical reference encoders where
 applicable, and conformance boundaries. [Container framing](artifact-container.md),
 [physical layouts](storage-layouts.md), weight recipes and runtime-state codecs are defined
@@ -8,7 +8,7 @@ separately.
 
 ## 1. Registered formats
 
-NInfer has exactly ten persistent numeric tensor formats in four categories.
+NInfer has exactly eleven persistent numeric tensor formats in the categories below.
 
 Direct scalar formats preserve one logical scalar word per tensor element:
 
@@ -27,6 +27,12 @@ Grouped quantized-weight formats preserve signed codes plus one scale per logica
 | `q5_g64_fp16` | 5 | 64 | `[-16, 15]` | one binary16 scale/group | 5.25 |
 | `q6_g64_fp16` | 6 | 64 | `[-32, 31]` | one binary16 scale/group | 6.25 |
 | `q8_g32_fp16` | 8 | 32 | `[-127, 127]` | one binary16 scale/group | 8.50 |
+
+The packed ternary weight format is:
+
+| Canonical name | Code | Group size | Coefficient domain | Scale | Full-group logical bits/weight |
+|---|---|---:|---|---|---:|
+| `ptq1_g128_fp16` | canonical base-3 digits | 128 | `{-1, 0, +1}` | one binary16 scale/group, stored in the block | 1.75 |
 
 The block-scaled floating-point weight format is:
 
@@ -303,7 +309,7 @@ concerns and are not persistent fields of this format.
 
 ### 4.1 Shape and group axis
 
-For the four grouped signed-integer schemes, let a logical quantized weight tensor have rank
+For the grouped quantized-weight schemes, let a logical quantized weight tensor have rank
 `r >= 1`, a positive `K`, and shape:
 
 ```text
@@ -319,7 +325,7 @@ identifies an independent logical row. For a leading coordinate vector `p` and e
 group(p, k) = (p, floor(k / G))
 ```
 
-where `G` is 64 for Q4/Q5/Q6 and 32 for Q8. A group never crosses a row boundary or any leading
+where `G` is 128 for Q2 and PTQ1, 64 for Q4/Q5/Q6, and 32 for Q8. A group never crosses a row boundary or any leading
 dimension. For a rank-3 expert bank `[E, N, K]`, for example, each `(expert, row)` pair is quantized
 independently; a group cannot cross from one expert to another.
 
@@ -357,7 +363,7 @@ them at its own boundary. A logical encoder produces no physical padding.
 
 ## 5. Grouped signed-integer code domains
 
-All five schemes are weight-only grouped integer schemes. Q4, Q5, Q6 and Q8 are zero-point-free signed-code schemes. Q2 uses an unsigned codebook index with a fixed zero-code value of one.
+All six grouped weight schemes are weight-only grouped quantizations. Q4, Q5, Q6 and Q8 are zero-point-free signed-code schemes. Q2 uses an unsigned codebook index with a fixed zero-code value of one.
  “Symmetric” in this
 document means that reconstruction is `scale * signed_code` with zero point zero. It does not mean
 that every legal interval has equal positive and negative magnitude.
@@ -411,13 +417,45 @@ signed-byte load because the registered conversion path establishes the code inv
 implementation convenience does not make `-128` legal. The trusted local runtime does not rescan
 the complete Q8 payload solely to prove an invariant already established by its producer.
 
+### 5.4 PTQ1_0
+
+`ptq1_g128_fp16` preserves Prism's GGML `PTQ1_0` block. Each 128-lane group is exactly 28
+bytes: 26 canonical base-3 digit bytes followed by one little-endian binary16 scale at byte
+offset 26. A digit byte holds five base-3 digits for lanes `0..79` or `80..119`, or four digits
+for lanes `120..127`, ordered most significant digit first.
+
+For stored byte `b` and digit index `n` within that byte, the decoder evaluates:
+
+```text
+v = b
+repeat n times: v = (v * 3) mod 256
+coefficient = floor(v * 3 / 256) - 1
+w_hat = coefficient * exact_binary16_to_binary32(scale)
+```
+
+The byte-to-lane mapping is:
+
+```text
+byte  i (0..15):  lane 16*n + i,        n in 0..4
+byte 16+j (0..7): lane 80 + 8*n + j,    n in 0..4
+byte 24+j (0..1): lane 120 + 2*n + j,   n in 0..3
+```
+
+A canonical encoder maps coefficient digits to base-3 values `d = coefficient + 1` and stores
+`ceil(V * 256 / 3^5)` for the 16- and 8-byte regions and `ceil(V * 256 / 3^4)` for the final
+two-byte region, where `V` is the big-endian base-3 value of the digit sequence. Byte values
+`0..242` are exactly the canonical codes. PTQ1 is lossless when importing a PTQ1_0 source and must
+use `import_encoded`; it is not an absmax requantization. `K` must be divisible by 128, so there is
+no partial group. Physical padding therefore does not exist for this format.
+
 ## 6. Grouped signed-integer scale and reconstruction semantics
 
 ### 6.1 Scale representation
 
 Each logical group has exactly one IEEE-754 binary16 scale. It is a dequantization multiplier, not
 an inverse scale. There is no zero point, offset, minimum, secondary scale, block exponent, or
-codebook.
+codebook. PTQ1 stores that word inside its 28-byte block instead of a separate scale plane; its
+validity and reconstruction role are otherwise identical.
 
 A valid scale is either:
 
@@ -478,7 +516,8 @@ The built-in `grouped_absmax` method uses per-row, per-group maximum absolute va
 implementation is in
 [`groupwise.py`](../../tools/convert/quantization/groupwise.py). The arithmetic below defines its
 exact output, including FP16 scale rounding and reciprocal-multiply code selection. It applies to
-the four grouped integer formats.
+the signed-code and Q2 grouped integer formats; PTQ1 uses the canonical base-3 encoder in Section
+5.4 and is never produced by `grouped_absmax`.
 
 The implementation accepts positive rank-two matrices, rejects non-finite source values and
 unrepresentable scales, and supplies zero tail padding for `row_split_k128_v1`.
@@ -653,7 +692,9 @@ enum spellings or private kernel layout. The retained codec and encoder evidence
 - canonical binary16 scale rounding, reciprocal-multiply rather than direct division, positive and
   negative ties-to-even, minimum-subnormal rescue, and rejection of non-finite or overflowing source
   groups;
-- canonical quantization followed by exact stored code/scale decode for a partially populated group.
+- canonical quantization followed by exact stored code/scale decode for a partially populated group;
+- PTQ1 canonical block encoding, the byte-to-lane digit mapping, all 128 lane positions, and FP16
+  scale bits against the reference decoder.
 
 For direct formats, the independent decode oracle is the abstract logical word in Section 3.1. For
 grouped signed-integer formats, it is the binary32 reconstruction in Section 6.2. Their canonical

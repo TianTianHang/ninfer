@@ -12,7 +12,7 @@ The storage registry contains exactly these identities:
 | Identity | Kind | Compatible numeric formats | Logical shape | Object alignment |
 |---|---|---|---|---:|
 | `contiguous_le_v1` | tensor layout | `bf16`, `fp32`, `int32` | rank `0..16` | 256 bytes |
-| `row_split_k128_v1` | tensor layout | `q2_g128_fp16`, `q4_g64_fp16`, `q5_g64_fp16`, `q6_g64_fp16`, `q8_g32_fp16` | rank 2 `[N,K]` | 256 bytes |
+| `row_split_k128_v1` | tensor layout | `q2_g128_fp16`, `ptq1_g128_fp16`, `q4_g64_fp16`, `q5_g64_fp16`, `q6_g64_fp16`, `q8_g32_fp16` | rank 2 `[N,K]` | 256 bytes |
 | `block_scale_k16_m128x4_v1` | tensor layout | `nvfp4` | rank 2 `[N,K]`, `N % 128 == 0`, `K % 64 == 0` | 256 bytes |
 | `row_scale_v1` | tensor layout | `fp8_e4m3fn_row_bf16` | rank 2 `[N,K]` | 256 bytes |
 | `raw_bytes_v1` | resource encoding | not applicable | nonempty byte string | 1 byte |
@@ -90,8 +90,12 @@ group size `G`:
 | `q5_g64_fp16` | 5 | 64 | 32 | 8 |
 | `q6_g64_fp16` | 6 | 64 | 32 | 16 |
 | `q8_g32_fp16` | 8 | 32 | 32 | 0 |
+| `ptq1_g128_fp16` | base-3 | 128 | 28 (includes the scale) | 0 |
 
-The layout extends the last axis to a multiple of 128:
+PTQ1 has no separate scale plane: one 28-byte block owns its 26 digit bytes and its binary16
+scale, and `K` must be divisible by 128, so PTQ1 has no partial group.
+
+For the other formats the layout extends the last axis to a multiple of 128:
 
 ```text
 K_pad              = align_up(K, 128)
@@ -107,7 +111,7 @@ For signed-code formats, the final partially logical group uses signed code zero
 
 ### 3.2 Payload planes
 
-The payload contains three conceptual planes in this order:
+Except for PTQ1, the payload contains three conceptual planes in this order:
 
 ```text
 base-code plane
@@ -119,6 +123,9 @@ binary16 scale plane
 
 Q4 and Q8 have no high-bit bytes. They still place the scale plane at the first 256-byte boundary
 after the base-code plane. There is no padding after the scale plane inside the object.
+
+PTQ1 is a single 28-byte-per-group plane; the layout has no high-bit or scale plane, and its
+payload ends after the base block plane.
 
 Within every plane, traversal order is:
 
@@ -160,6 +167,18 @@ excludes code `-128` remains in force.
 
 The complete base plane is the concatenation of these per-group byte sequences in plane traversal
 order.
+
+### 3.3.1 PTQ1 base-code blocks
+
+One PTQ1 group is 28 bytes: digits for lanes `0..79` in bytes `0..15`, digits for lanes
+`80..119` in bytes `16..23`, digits for lanes `120..127` in bytes `24..25`, and the binary16
+scale in bytes `26..27` (little-endian). Digit byte `i` of the first region, `16+j` of the second,
+and `24+j` of the third carries lane `16*n + i`, `80 + 8*n + j`, and `120 + 2*n + j` respectively,
+where `n` counts from zero with the most significant base-3 digit first.
+
+Lane `l` is decoded by taking its region byte, applying the `n`-th base-3 digit transform from
+`tensor-formats.md` Section 5.4, and multiplying by the block scale. A group therefore stores
+`28 * 8 / 128 = 1.75` bits per weight including its scale.
 
 ### 3.4 High-bit plane
 

@@ -230,6 +230,10 @@ const char* qtype_name(QType qtype) {
         return "NVFP4";
     case QType::FP8_E4M3FN_ROW_BF16:
         return "FP8";
+    case QType::Q2_G128_FP16:
+        return "Q2";
+    case QType::PTQ1_G128_FP16:
+        return "PTQ1";
     default:
         break;
     }
@@ -252,6 +256,8 @@ QType parse_qtype(std::string_view text) {
     if (value == "bf16") { return QType::BF16; }
     if (value == "nvfp4") { return QType::NVFP4; }
     if (value == "fp8" || value == "fp8_e4m3fn_row_bf16") { return QType::FP8_E4M3FN_ROW_BF16; }
+    if (value == "q2" || value == "q2_g128_fp16") { return QType::Q2_G128_FP16; }
+    if (value == "ptq1" || value == "ptq1_g128_fp16") { return QType::PTQ1_G128_FP16; }
     throw std::invalid_argument("unknown qtype: " + std::string(text));
 }
 
@@ -318,9 +324,9 @@ Sweep parse_sweep(std::string_view text) {
 void usage(const char* argv0) {
     std::fprintf(stderr,
                  "Usage:\n"
-                 "  %s --qtype Q4|Q5|Q6|Q8|BF16|NVFP4|FP8 --n N --k K --t T [options]\n"
-                 "  %s --qtype Q4|Q5|Q6|Q8|BF16|NVFP4|FP8 --n N --k K --sweep START:END[:STEP] "
-                 "[options]\n"
+                 "  %s --qtype Q4|Q5|Q6|Q8|BF16|NVFP4|FP8|Q2|PTQ1 --n N --k K --t T [options]\n"
+                 "  %s --qtype Q4|Q5|Q6|Q8|BF16|NVFP4|FP8|Q2|PTQ1 --n N --k K --sweep "
+                 "START:END[:STEP] [options]\n"
                  "  %s --suite qwen3_6_27b|qwen3_6_35b_a3b|all [options]\n\n"
                  "Options:\n"
                  "  --policy a16|a8|a4 Activation-compute policy (default a16).\n"
@@ -516,6 +522,11 @@ LinearBenchWeight make_weight(QType qtype, std::int32_t n, std::int32_t k) {
     }
     if (qtype == QType::FP8_E4M3FN_ROW_BF16) {
         bench::PackedQuantizedWeight packed = bench::make_fp8_weight(n, k);
+        const std::uint64_t model_bytes     = packed.model_weight_bytes();
+        return {std::move(packed.storage), packed.weight, model_bytes};
+    }
+    if (qtype == QType::Q2_G128_FP16 || qtype == QType::PTQ1_G128_FP16) {
+        bench::PackedQuantizedWeight packed = bench::make_ternary_weight(qtype, n, k, 501U);
         const std::uint64_t model_bytes     = packed.model_weight_bytes();
         return {std::move(packed.storage), packed.weight, model_bytes};
     }

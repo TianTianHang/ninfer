@@ -339,6 +339,110 @@ inline PackedQuantizedWeight make_fp8_weight(std::int32_t n, std::int32_t k,
     return result;
 }
 
+// Ternary fixtures. Q2 groups hold 32 unsigned two-bit code bytes and one binary16 scale; PTQ1
+// groups hold 28 bytes: 26 canonical base-3 digit bytes and the binary16 scale in the last two.
+// Byte values 0..242 are exactly the canonical PTQ1 digit codes.
+namespace detail {
+
+inline __device__ std::uint64_t ternary_mix(std::uint64_t value) {
+    value += 0x9e3779b97f4a7c15ULL;
+    value = (value ^ (value >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    value = (value ^ (value >> 27)) * 0x94d049bb133111ebULL;
+    return value ^ (value >> 31);
+}
+
+inline __device__ float ternary_unit(std::uint64_t value) {
+    return static_cast<float>((value >> 40) & 0xffffU) * (1.0F / 65535.0F);
+}
+
+static __global__ void fill_ternary_weight_kernel(std::uint8_t* codes, __half* scales,
+                                                  std::uint64_t groups, std::uint64_t byte_count,
+                                                  std::uint64_t seed, float extent, bool ptq1) {
+    for (auto g = std::uint64_t(blockIdx.x) * blockDim.x + threadIdx.x; g < groups;
+         g += std::uint64_t(gridDim.x) * blockDim.x) {
+        std::uint8_t* block = codes + g * byte_count;
+        for (std::uint64_t i = 0; i < byte_count; ++i) {
+            const std::uint64_t mixed =
+                ternary_mix(seed ^ (g * 0x9e3779b97f4a7c15ULL) ^ (i * 0x100000001b3ULL));
+            block[i] = static_cast<std::uint8_t>(ptq1 ? (mixed % 243U) : mixed);
+        }
+        const __half scale =
+            __float2half_rn(extent * (0.5F + ternary_unit(ternary_mix(seed ^ (g + 0x51U)))));
+        if (ptq1) {
+            *reinterpret_cast<__half*>(block + byte_count - 2) = scale;
+        } else {
+            scales[g] = scale;
+        }
+    }
+}
+
+} // namespace detail
+
+inline PackedQuantizedWeight make_ternary_weight(QType qtype, std::int32_t n, std::int32_t k,
+                                                 std::uint64_t seed = 0x51U,
+                                                 float extent        = 0.05F) {
+    const bool ptq1 = qtype == QType::PTQ1_G128_FP16;
+    if ((!ptq1 && qtype != QType::Q2_G128_FP16) || n <= 0 || k <= 0 || (k % 128) != 0) {
+        throw std::invalid_argument("invalid benchmark ternary weight shape");
+    }
+    const std::uint64_t groups_per_row = static_cast<std::uint64_t>(k / 128);
+    const std::uint64_t groups         = detail::checked_mul(
+        static_cast<std::uint64_t>(n), groups_per_row, "benchmark ternary group count overflow");
+    const std::uint64_t bytes_per_group = ptq1 ? 28U : 32U;
+    const std::uint64_t low_bytes =
+        detail::checked_mul(groups, bytes_per_group, "benchmark ternary payload overflow");
+    const std::uint64_t scale_offset =
+        ptq1 ? low_bytes : detail::align_up(low_bytes, 256);
+    const std::uint64_t scale_bytes =
+        ptq1 ? 0U : detail::checked_mul(groups, 2, "benchmark ternary scale overflow");
+    const std::uint64_t payload_bytes =
+        detail::checked_add(scale_offset, scale_bytes, "benchmark ternary payload overflow");
+    if (payload_bytes > std::numeric_limits<std::size_t>::max()) {
+        throw std::overflow_error("benchmark ternary payload does not fit size_t");
+    }
+
+    PackedQuantizedWeight result{
+        DeviceBuffer(static_cast<std::size_t>(payload_bytes)),
+        {},
+        low_bytes,
+        0,
+        0,
+        scale_offset,
+        scale_bytes,
+    };
+    CUDA_CHECK(cudaMemset(result.storage.p, 0, result.storage.bytes));
+    detail::fill_ternary_weight_kernel<<<detail::launch_grid(groups), 256>>>(
+        static_cast<std::uint8_t*>(result.storage.p),
+        ptq1 ? nullptr
+             : reinterpret_cast<__half*>(static_cast<std::uint8_t*>(result.storage.p) +
+                                         scale_offset),
+        groups, bytes_per_group, seed, extent, ptq1);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    Weight& weight          = result.weight;
+    weight.payload          = result.storage.p;
+    weight.payload_bytes    = payload_bytes;
+    weight.qtype            = qtype;
+    weight.layout           = QuantLayout::RowSplit;
+    weight.scale_dtype      = DType::FP16;
+    weight.group_size       = 128;
+    weight.group            = 128;
+    weight.ndim             = 2;
+    weight.shape[0]         = n;
+    weight.shape[1]         = k;
+    weight.padded_shape[0]  = n;
+    weight.padded_shape[1]  = k;
+    weight.qdata            = result.storage.p;
+    weight.qhigh            = nullptr;
+    weight.scales           = ptq1 ? nullptr
+                                   : static_cast<const std::uint8_t*>(result.storage.p) +
+                                         scale_offset;
+    weight.n                = n;
+    weight.k                = k;
+    return result;
+}
+
 inline Weight row_view(const Weight& parent, std::int32_t row_begin, std::int32_t rows) {
     if (parent.layout != QuantLayout::RowSplit || row_begin < 0 || rows <= 0 ||
         row_begin > parent.n - rows) {

@@ -50,7 +50,7 @@ other references own narrower contracts:
 | [Numeric formats](maintainer/tensor-formats.md) | represented values, codes/scales, conversion arithmetic and numerical interpretation |
 | [Storage layouts](maintainer/storage-layouts.md) | packing, plane offsets, padding, encoded sizes and view addressing |
 | [Qwen3.5 model](maintainer/qwen3_5-model.md) | Dense/MoE mathematics, instance config, logical parameters, MTP, Vision and state semantics |
-| [Ternary Bonsai adaptation](maintainer/ternary-bonsai-adaptation.md) | PQ2_0/q2_g128_fp16 storage, Prism folding, GDN semantics, independent qualification and CUDA/Ninja build lessons |
+| [Ternary Bonsai adaptation](maintainer/ternary-bonsai-adaptation.md) | PQ2_0/q2_g128_fp16/PTQ1_0 storage, native routes, Prism folding, GDN semantics, qualification, and measured RTX 5060 Laptop performance |
 | [DFlash and DFlash2](maintainer/dflash.md) | conditioning, masked draft computation, proposal distributions and backend state |
 | [Constrained decoding](maintainer/constrained-decoding.md) | GBNF/JSON/choice/regex, tool policies, masks, speculative transactions and observations |
 | [Resource scheduling and context cache](maintainer/resource-scheduling-and-context-cache.md) | core design for continuation, retention, incremental resources, preemption and recovery |

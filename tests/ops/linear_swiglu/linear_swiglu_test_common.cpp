@@ -230,7 +230,11 @@ void validate_profile(const Profile& profile) {
                        profile.input_rows == 5120 && profile.output_rows == 17408;
     const bool fp8 = profile.qtype == QType::FP8_E4M3FN_ROW_BF16 && profile.gate_up_rows == 34816 &&
                      profile.input_rows == 5120 && profile.output_rows == 17408;
-    if ((!q4 && !q8_companion && !q8_dflash2 && !nvfp4 && !fp8) ||
+    const bool ternary = (profile.qtype == QType::Q2_G128_FP16 ||
+                          profile.qtype == QType::PTQ1_G128_FP16) &&
+                         profile.gate_up_rows == 34816 && profile.input_rows == 5120 &&
+                         profile.output_rows == 17408;
+    if ((!q4 && !q8_companion && !q8_dflash2 && !nvfp4 && !fp8 && !ternary) ||
         profile.gate_up_rows != 2 * profile.output_rows) {
         throw std::invalid_argument("linear_swiglu test: profile is not registered");
     }
@@ -238,7 +242,8 @@ void validate_profile(const Profile& profile) {
          profile.activation_compute != ActivationCompute::A4) ||
         (fp8 && profile.activation_compute != ActivationCompute::A16 &&
          profile.activation_compute != ActivationCompute::A8) ||
-        (!nvfp4 && !fp8 && profile.activation_compute != ActivationCompute::A16)) {
+        (!nvfp4 && !fp8 && !ternary && profile.activation_compute != ActivationCompute::A16) ||
+        (ternary && profile.activation_compute != ActivationCompute::A16)) {
         throw std::invalid_argument("linear_swiglu test: invalid activation-compute profile");
     }
 }
@@ -343,7 +348,16 @@ int run_profile(std::string_view label, const Profile& profile,
                 const auto exact = ops::linear_swiglu_workspace_capacity_bytes(
                     profile.qtype, profile.gate_up_rows, profile.input_rows, policy, tokens,
                     tokens);
-                if (workspace.used() != 0 || workspace.peak_used() != exact) {
+                // Ternary staging of the folded activation is conditional on model-provided
+                // Hadamard metadata, which the qtype/shape capacity query cannot see: its result
+                // is a sufficient upper bound rather than an exact per-call figure.
+                const bool conditional_capacity = profile.qtype == QType::Q2_G128_FP16 ||
+                                                  profile.qtype == QType::PTQ1_G128_FP16;
+                const bool workspace_mismatch =
+                    workspace.used() != 0 ||
+                    (conditional_capacity ? workspace.peak_used() > exact
+                                          : workspace.peak_used() != exact);
+                if (workspace_mismatch) {
                     std::cerr << label_case << ": exact workspace query/execution mismatch\n";
                     ++failures;
                 }

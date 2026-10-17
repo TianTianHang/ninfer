@@ -70,8 +70,11 @@ enum class LinearPolicy : std::uint8_t {
  *
  * @par Supported execution domain
  * Registered execution uses RowSplit Q4_G64_FP16, Q5_G64_FP16, Q6_G64_FP16, or Q8_G32_FP16 weights
- * with FP16 scales, block-scaled NVFP4 weights, row-scaled FP8_E4M3FN_ROW_BF16 weights, plus
- * registered contiguous BF16 problems. Each format owns a finite registry of exact physical
+ * with FP16 scales, RowSplit Q2_G128_FP16 or PTQ1_G128_FP16 ternary weights with one FP16 scale per
+ * 128-lane group, block-scaled NVFP4 weights, row-scaled FP8_E4M3FN_ROW_BF16 weights, plus
+ * registered contiguous BF16 problems. The ternary formats accept every positive T and decode
+ * their stored grid as specified by the referenced tensor-format contract; the group scale
+ * multiplies the completed group dot product. Each format owns a finite registry of exact physical
  * weight problems and selects its kernel internally; a valid encoding and alignment do not imply
  * arbitrary N/K support. FP8 currently registers `[N,K]` in `{[14336,5120], [16384,5120],
  * [34816,5120], [248320,5120], [5120,6144], [5120,17408]}` at every positive T. The current NVFP4

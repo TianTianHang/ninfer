@@ -240,6 +240,10 @@ QType qtype_for(WeightFormat format) {
         return QType::Q5_G64_FP16;
     case WeightFormat::Q8G32F16S:
         return QType::Q8_G32_FP16;
+    case WeightFormat::Q2G128F16:
+        return QType::Q2_G128_FP16;
+    case WeightFormat::PTQ1G128F16:
+        return QType::PTQ1_G128_FP16;
     }
     throw std::invalid_argument("linear_add test: unknown weight format");
 }
@@ -419,13 +423,25 @@ int run_shape(std::string_view label, WeightFormat format, const ShapeCase& shap
         }
         const std::size_t exact_workspace =
             ops::linear_add_workspace_capacity_bytes(qtype, shape.n, shape.k, t, t);
-        if (workspace.used() != 0 || workspace.peak_used() != exact_workspace) {
+        // Ternary staging of the folded activation is conditional on model-provided Hadamard
+        // metadata, which the qtype/shape capacity query cannot see: its result is a sufficient
+        // upper bound rather than an exact per-call figure.
+        const bool conditional_capacity =
+            qtype == QType::Q2_G128_FP16 || qtype == QType::PTQ1_G128_FP16;
+        const bool workspace_mismatch =
+            workspace.used() != 0 ||
+            (conditional_capacity ? workspace.peak_used() > exact_workspace
+                                  : workspace.peak_used() != exact_workspace);
+        if (workspace_mismatch) {
             std::cerr << case_label << ": exact workspace query/execution high-water mismatch\n";
             ++failures;
         }
         executed_peak = std::max(executed_peak, workspace.peak_used());
     }
-    if (executed_peak != workspace_bytes) {
+    const bool conditional_capacity =
+        qtype == QType::Q2_G128_FP16 || qtype == QType::PTQ1_G128_FP16;
+    if (conditional_capacity ? executed_peak > workspace_bytes
+                             : executed_peak != workspace_bytes) {
         std::cerr << label << ": interval workspace capacity has no executed high-water witness\n";
         ++failures;
     }

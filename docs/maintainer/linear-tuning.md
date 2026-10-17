@@ -8,6 +8,11 @@ shared implementation boundaries, candidate workflow, and numerical qualificatio
 
 ## 1. Workload and tuning extent
 
+The ternary Q2/PTQ1 routes were tuned on the local RTX 5060 Laptop GPU (8 GB, `sm_120a`) under
+Dynamic Boost; their routes, power state, and measured Op and end-to-end results are recorded in
+[Ternary Bonsai adaptation](ternary-bonsai-adaptation.md). The RTX 5090 reference constants in the
+benchmark remain the fork's reference and are not the target for this machine.
+
 For Linear and related token projections, the latency-sensitive **hot interval** is `1 <= T <= 128`,
 where `T` is the token-column extent of the actual Op call. This covers a target verification block
 of 16 columns (15 drafts plus one anchor) across eight concurrent requests. For other Ops, derive

@@ -246,7 +246,7 @@ struct PackedWeight {
             w.qhigh  = high_plane_bytes == 0
                            ? nullptr
                            : static_cast<std::uint8_t*>(device_payload) + high_plane_offset;
-            w.scales = w.qtype == QType::BF16
+            w.scales = (w.qtype == QType::BF16 || w.qtype == QType::PTQ1_G128_FP16)
                            ? nullptr
                            : static_cast<std::uint8_t*>(device_payload) + scale_plane_offset;
         } else {
@@ -264,12 +264,18 @@ struct PackedWeight {
             throw std::invalid_argument("quantized-weight fixture: invalid row view");
         }
         if (w.layout == QuantLayout::RowSplit) {
-            const detail::QuantSpec spec      = detail::quant_spec(w.qtype);
-            const std::int32_t groups_per_row = w.padded_shape[1] / spec.group_size;
-            const std::size_t code_row =
-                static_cast<std::size_t>(groups_per_row) * detail::nibble_bytes_per_group(spec);
+            const bool ptq1 = w.qtype == QType::PTQ1_G128_FP16;
+            const bool q2   = w.qtype == QType::Q2_G128_FP16;
+            const std::int32_t group_size = q2 || ptq1 ? 128 : detail::quant_spec(w.qtype).group_size;
+            const std::int32_t groups_per_row = w.padded_shape[1] / group_size;
+            const std::size_t code_row = static_cast<std::size_t>(groups_per_row) *
+                                         (ptq1 ? 28U : q2 ? 32U
+                                                          : detail::nibble_bytes_per_group(
+                                                                detail::quant_spec(w.qtype)));
             const std::size_t high_row =
-                static_cast<std::size_t>(groups_per_row) * detail::high_bytes_per_group(spec);
+                q2 || ptq1 ? 0U
+                           : static_cast<std::size_t>(groups_per_row) *
+                                 detail::high_bytes_per_group(detail::quant_spec(w.qtype));
             const std::size_t scale_row =
                 static_cast<std::size_t>(groups_per_row) * sizeof(std::uint16_t);
             w.qdata = static_cast<const std::uint8_t*>(w.qdata) +
@@ -277,8 +283,10 @@ struct PackedWeight {
             w.qhigh  = high_row == 0 ? nullptr
                                      : static_cast<const std::uint8_t*>(w.qhigh) +
                                           static_cast<std::size_t>(row_begin) * high_row;
-            w.scales = static_cast<const std::uint8_t*>(w.scales) +
-                       static_cast<std::size_t>(row_begin) * scale_row;
+            w.scales = w.scales == nullptr
+                           ? nullptr
+                           : static_cast<const std::uint8_t*>(w.scales) +
+                                 static_cast<std::size_t>(row_begin) * scale_row;
         } else if (w.layout == QuantLayout::BlockScaleK16M128x4) {
             if ((row_begin % 128) != 0 || (row_count % 128) != 0) {
                 throw std::invalid_argument(
@@ -491,6 +499,93 @@ inline PackedWeight make_patterned_weight(QType qtype, std::int32_t n, std::int3
         throw std::invalid_argument(
             "quantized-weight fixture: divisors are defined only for NVFP4");
     }
+    if (qtype == QType::Q2_G128_FP16 || qtype == QType::PTQ1_G128_FP16) {
+        const bool ptq1 = qtype == QType::PTQ1_G128_FP16;
+        if (ptq1 && (k % 128) != 0) {
+            throw std::invalid_argument(
+                "quantized-weight fixture: PTQ1 requires K divisible by 128");
+        }
+        const std::int32_t padded_k       = ptq1 ? k : detail::align_up(k, 128);
+        const std::int32_t groups_per_row = padded_k / 128;
+        const std::int32_t logical_groups = (k + 127) / 128;
+        const std::uint64_t groups        = static_cast<std::uint64_t>(n) * groups_per_row;
+        const std::uint64_t block_bytes   = ptq1 ? 28U : 32U;
+
+        PackedWeight packed;
+        packed.code_plane_bytes = groups * block_bytes;
+        packed.high_plane_offset =
+            detail::align_up_size(static_cast<std::size_t>(packed.code_plane_bytes), 256);
+        packed.high_plane_bytes   = 0;
+        packed.scale_plane_offset = packed.high_plane_offset;
+        packed.scale_plane_bytes  = ptq1 ? 0U : groups * 2U;
+        packed.payload.assign(static_cast<std::size_t>(packed.scale_plane_offset +
+                                                       packed.scale_plane_bytes),
+                              0);
+
+        constexpr std::uint16_t kTernaryScales[] = {0x2040U, 0x2440U, 0x2840U, 0x2c40U};
+        for (std::uint64_t g = 0; g < groups; ++g) {
+            const std::uint64_t row   = g / groups_per_row;
+            const std::uint64_t group = g % groups_per_row;
+            const std::uint64_t row_mix =
+                detail::mix64(row ^ (static_cast<std::uint64_t>(seed) << 17));
+            std::uint8_t* block = packed.payload.data() + g * block_bytes;
+            const std::int32_t lane_begin =
+                group + 1 == static_cast<std::uint64_t>(logical_groups)
+                    ? static_cast<std::int32_t>(k - group * 128)
+                    : 128;
+            if (ptq1) {
+                for (int byte = 0; byte < 26; ++byte) {
+                    block[byte] = static_cast<std::uint8_t>(
+                        detail::mix64(row_mix ^ (group << 8) ^
+                                      (static_cast<std::uint64_t>(byte) << 32) ^ seed) %
+                        243U);
+                }
+                detail::store_u16_le(packed.payload, g * 28U + 26,
+                                     kTernaryScales[(row ^ (row >> 8) ^ group ^ seed) & 3U]);
+            } else {
+                for (int byte = 0; byte < 32; ++byte) {
+                    std::uint32_t value = static_cast<std::uint32_t>(
+                        detail::mix64(row_mix ^ (group << 8) ^
+                                      (static_cast<std::uint64_t>(byte) << 32) ^ seed) >>
+                        56);
+                    for (int slot = 0; slot < 4; ++slot) {
+                        const int lane = byte * 4 + slot;
+                        if (lane >= lane_begin) {
+                            value = (value & ~(3U << (2 * slot))) | (1U << (2 * slot));
+                        }
+                    }
+                    block[byte] = static_cast<std::uint8_t>(value);
+                }
+                detail::store_u16_le(packed.payload, packed.scale_plane_offset + g * 2U,
+                                     kTernaryScales[(row ^ (row >> 8) ^ group ^ seed) & 3U]);
+            }
+        }
+
+        packed.weight.qtype            = qtype;
+        packed.weight.layout           = QuantLayout::RowSplit;
+        packed.weight.scale_dtype      = DType::FP16;
+        packed.weight.payload          = packed.payload.data();
+        packed.weight.payload_bytes    = packed.payload.size();
+        packed.weight.high_plane_bytes = 0;
+        packed.weight.qdata            = packed.payload.data();
+        packed.weight.qhigh            = nullptr;
+        packed.weight.scales           = ptq1 ? nullptr
+                                              : packed.payload.data() + packed.scale_plane_offset;
+        packed.weight.group_size       = 128;
+        packed.weight.group            = 128;
+        packed.weight.ndim             = 2;
+        packed.weight.shape[0]         = n;
+        packed.weight.shape[1]         = k;
+        packed.weight.shape[2]         = 1;
+        packed.weight.shape[3]         = 1;
+        packed.weight.padded_shape[0]  = n;
+        packed.weight.padded_shape[1]  = padded_k;
+        packed.weight.padded_shape[2]  = 1;
+        packed.weight.padded_shape[3]  = 1;
+        packed.weight.n                = n;
+        packed.weight.k                = k;
+        return packed;
+    }
     const detail::QuantSpec spec      = detail::quant_spec(qtype);
     const std::int32_t padded_k       = detail::align_up(k, 128);
     const std::int32_t kg             = padded_k / spec.group_size;
@@ -697,6 +792,46 @@ inline double logical_weight_fp64(const PackedWeight& packed, std::int32_t row,
                                detail::decode_e4m3fn(packed.payload[scale_offset]) /
                                static_cast<double>(weight.weight_scale_divisor);
         return static_cast<double>(static_cast<float>(decoded));
+    }
+
+    if (weight.qtype == QType::Q2_G128_FP16 || weight.qtype == QType::PTQ1_G128_FP16) {
+        const bool ptq1 = weight.qtype == QType::PTQ1_G128_FP16;
+        if (weight.layout != QuantLayout::RowSplit || weight.group_size != 128 ||
+            weight.group != 128 || weight.padded_shape[1] % 128 != 0) {
+            throw std::invalid_argument("quantized-weight fixture: invalid ternary metadata");
+        }
+        const std::int32_t groups_per_row = weight.padded_shape[1] / 128;
+        const std::int32_t group          = column / 128;
+        const std::int32_t lane           = column - group * 128;
+        const std::size_t group_index     = static_cast<std::size_t>(row) * groups_per_row + group;
+        if (ptq1) {
+            const std::uint8_t* block = packed.payload.data() + group_index * 28U;
+            int byte                  = 0;
+            int digit                 = 0;
+            if (lane < 80) {
+                byte  = lane & 15;
+                digit = lane >> 4;
+            } else if (lane < 120) {
+                byte  = 16 + ((lane - 80) & 7);
+                digit = (lane - 80) >> 3;
+            } else {
+                byte  = 24 + ((lane - 120) & 1);
+                digit = (lane - 120) >> 1;
+            }
+            std::uint32_t value = block[byte];
+            for (int step = 0; step < digit; ++step) { value = (value * 3U) & 0xffU; }
+            value *= 3U;
+            const std::uint16_t scale_bits =
+                detail::load_u16_le(packed.payload, group_index * 28U + 26U);
+            return static_cast<double>(static_cast<int>(value >> 8) - 1) *
+                   static_cast<double>(detail::f16_to_f32(scale_bits));
+        }
+        const std::uint8_t byte = packed.payload[group_index * 32U + static_cast<std::size_t>(lane / 4)];
+        const int code          = (byte >> (2 * (lane % 4))) & 3;
+        const std::uint16_t scale_bits =
+            detail::load_u16_le(packed.payload, packed.scale_plane_offset + group_index * 2U);
+        return static_cast<double>(code - 1) *
+               static_cast<double>(detail::f16_to_f32(scale_bits));
     }
 
     const detail::QuantSpec spec = detail::quant_spec(weight.qtype);
