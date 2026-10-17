@@ -21,6 +21,7 @@ namespace {
 constexpr int kGroup = 128;
 constexpr int kBlockBytes = 28;
 constexpr int kThreads = 256;
+constexpr int kWarpsPerBlock = kThreads / 32;
 
 struct block_ptq1_0 {
     std::uint8_t qs[24];
@@ -51,31 +52,43 @@ __device__ __forceinline__ int ptq1_0_trit(const block_ptq1_0* x, int e) {
     return static_cast<int>((value * 3u) >> 8) - 1;
 }
 
-__global__ void ptq1_a16_kernel(const __nv_bfloat16* __restrict__ x,
-                                const std::uint8_t* __restrict__ weights,
-                                __nv_bfloat16* __restrict__ out, int n, int k, int t,
-                                int x_token_stride, int out_token_stride,
-                                bool accumulate) {
-    const std::size_t index = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+__global__ void ptq1_a16_warp_kernel(const __nv_bfloat16* __restrict__ x,
+                                     const std::uint8_t* __restrict__ weights,
+                                     __nv_bfloat16* __restrict__ out, int n, int k, int t,
+                                     int x_token_stride, int out_token_stride,
+                                     bool accumulate) {
+    const int lane = threadIdx.x & 31;
+    const int warp = threadIdx.x >> 5;
+    const std::size_t work = static_cast<std::size_t>(blockIdx.x) * kWarpsPerBlock + warp;
     const std::size_t total = static_cast<std::size_t>(n) * t;
-    if (index >= total) { return; }
-    const int row = static_cast<int>(index % n);
-    const int token = static_cast<int>(index / n);
+    if (work >= total) { return; }
+    const int row = static_cast<int>(work % n);
+    const int token = static_cast<int>(work / n);
     const int blocks_per_row = k / kGroup;
     const auto* row_weights = reinterpret_cast<const block_ptq1_0*>(weights) +
                                static_cast<std::size_t>(row) * blocks_per_row;
+    const auto* activation = x + static_cast<std::size_t>(token) * x_token_stride;
     float sum = 0.0f;
-    for (int kk = 0; kk < k; ++kk) {
-        const auto& block = row_weights[kk / kGroup];
-        const float weight = static_cast<float>(ptq1_0_trit(&block, kk % kGroup)) *
-                             __half2float(block.d);
-        sum = fmaf(weight,
-                   __bfloat162float(x[static_cast<std::size_t>(token) * x_token_stride + kk]),
-                   sum);
+    for (int group = 0; group < blocks_per_row; ++group) {
+        const auto* block = row_weights + group;
+        const float scale = lane == 0 ? __half2float(block->d) : 0.0f;
+        const float shared_scale = __shfl_sync(0xffffffffu, scale, 0);
+#pragma unroll
+        for (int offset = 0; offset < kGroup; offset += 32) {
+            const int element = offset + lane;
+            const float weight = static_cast<float>(ptq1_0_trit(block, element)) * shared_scale;
+            sum = fmaf(weight, __bfloat162float(activation[group * kGroup + element]), sum);
+        }
     }
-    const std::size_t output = static_cast<std::size_t>(token) * out_token_stride + row;
-    const float value = accumulate ? sum + __bfloat162float(out[output]) : sum;
-    out[output] = __float2bfloat16(value);
+#pragma unroll
+    for (int offset = 16; offset > 0; offset >>= 1) {
+        sum += __shfl_down_sync(0xffffffffu, sum, offset);
+    }
+    if (lane == 0) {
+        const std::size_t output = static_cast<std::size_t>(token) * out_token_stride + row;
+        const float value = accumulate ? sum + __bfloat162float(out[output]) : sum;
+        out[output] = __float2bfloat16(value);
+    }
 }
 
 } // namespace
@@ -91,9 +104,10 @@ void ptq1_linear_launch(const Tensor& x, const Weight& weight, Tensor& out,
     }
     const int t = x.ne[1];
     if (t <= 0) { return; }
-    const int blocks = static_cast<int>((static_cast<std::size_t>(weight.n) * t + kThreads - 1) /
-                                        kThreads);
-    ptq1_a16_kernel<<<blocks, kThreads, 0, stream>>>(
+    const int blocks = static_cast<int>((static_cast<std::size_t>(weight.n) * t +
+                                         kWarpsPerBlock - 1) /
+                                        kWarpsPerBlock);
+    ptq1_a16_warp_kernel<<<blocks, kThreads, 0, stream>>>(
         static_cast<const __nv_bfloat16*>(x.data), static_cast<const std::uint8_t*>(weight.qdata),
         static_cast<__nv_bfloat16*>(out.data), weight.n, weight.k, t,
         static_cast<int>(x.nb[1] / sizeof(__nv_bfloat16)),

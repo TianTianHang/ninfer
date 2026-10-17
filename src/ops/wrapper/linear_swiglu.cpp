@@ -46,8 +46,11 @@ std::size_t linear_swiglu_workspace_capacity_bytes(QType qtype, std::int32_t gat
             {gate_up_rows, gate_up_rows / 2, input_rows, input_rows, max_tokens});
         return 0;
     }
-    if (qtype == QType::Q2_G128_FP16 || qtype == QType::PTQ1_G128_FP16) {
-        // The ternary route stages the transformed activation and gate/up projection.
+    if (qtype == QType::PTQ1_G128_FP16) {
+        return static_cast<std::size_t>(input_rows) * static_cast<std::size_t>(max_tokens) * 2u;
+    }
+    if (qtype == QType::Q2_G128_FP16) {
+        // The Q2 route stages the transformed activation and gate/up projection.
         return detail::q2_linear_swiglu_workspace_bytes(gate_up_rows, input_rows, max_tokens);
     }
     if (qtype == QType::Q4_G64_FP16) {

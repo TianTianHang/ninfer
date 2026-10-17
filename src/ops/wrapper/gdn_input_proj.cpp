@@ -1023,6 +1023,15 @@ bool ternary_conv_snapshot(const Tensor& x, const Weight& qk_weight,
                            cudaStream_t stream) {
     if (qk_weight.qtype != QType::Q2_G128_FP16 && qk_weight.qtype != QType::PTQ1_G128_FP16) { return false; }
     auto scope = ws.scope();
+    if (geometry.batch > 1) {
+        compose_batched_snapshot(
+            x, conv_weight, conv_states, valid_columns, initial_state_slots, snapshot_base_slots,
+            query, key, value, z, 2048, 2048, 6144, geometry, ws, stream,
+            [&](const Tensor& x_flat, Tensor& projected, Tensor& z_flat) {
+                q2_gdn_input_proj(x_flat, qk_weight, value_z_weight, projected, z_flat, ws, stream);
+            });
+        return true;
+    }
     ProjectedWorkspace scratch = allocate_projected_workspace(ws, channels, geometry.width);
     q2_gdn_input_proj(x, qk_weight, value_z_weight, scratch.projected, z, ws, stream);
     detail::gdn_projected_conv_snapshot_launch(scratch.projected, conv_weight, conv_states,
